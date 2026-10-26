@@ -20,3 +20,6 @@
         thinkProvider: fork
         maxThinkCalls: 5
         thinkTimeoutMs: 900000
+        verifyRounds: 2
+        verifyProvider: spawn
+        verifyTimeoutMs: 600000

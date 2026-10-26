@@ -37,6 +37,11 @@ import {
   DEFAULT_THINK_PROVIDER,
   DEFAULT_THINK_TIMEOUT_MS,
 } from './think.js'
+import {
+  DEFAULT_VERIFY_PROVIDER,
+  DEFAULT_VERIFY_ROUNDS,
+  DEFAULT_VERIFY_TIMEOUT_MS,
+} from './verify.js'
 
 /** Cordis plugin name used by loader diagnostics. */
 export const name = 'delegation-policy'
@@ -83,6 +88,12 @@ export interface Config {
   maxThinkCalls: Volatile<number>
   /** Budget for one delegated thought, in milliseconds. */
   thinkTimeoutMs: Volatile<number>
+  /** Verification passes a delegated thought may run. */
+  verifyRounds: Volatile<number>
+  /** Provider that runs the verifier. */
+  verifyProvider: Volatile<string>
+  /** Budget for one verification pass, in milliseconds. */
+  verifyTimeoutMs: Volatile<number>
 }
 
 export const Config = z.object({
@@ -94,6 +105,9 @@ export const Config = z.object({
   thinkProvider: z.string().default(DEFAULT_THINK_PROVIDER).volatile(),
   maxThinkCalls: z.number().step(1).min(1).default(DEFAULT_MAX_THINK_CALLS).volatile(),
   thinkTimeoutMs: z.number().step(1).min(1).default(DEFAULT_THINK_TIMEOUT_MS).volatile(),
+  verifyRounds: z.number().step(1).min(0).default(DEFAULT_VERIFY_ROUNDS).volatile(),
+  verifyProvider: z.string().default(DEFAULT_VERIFY_PROVIDER).volatile(),
+  verifyTimeoutMs: z.number().step(1).min(1).default(DEFAULT_VERIFY_TIMEOUT_MS).volatile(),
 })
 
 /**
@@ -141,5 +155,8 @@ export function apply(ctx: Context, config: Config): void {
     provider: config.thinkProvider.get(),
     maxChildCalls: config.maxThinkCalls.get(),
     timeoutMs: config.thinkTimeoutMs.get(),
+    verifyRounds: config.verifyRounds.get(),
+    verifyProvider: config.verifyProvider.get(),
+    verifyTimeoutMs: config.verifyTimeoutMs.get(),
   }, thinkBudget)
 }

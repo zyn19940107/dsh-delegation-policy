@@ -17,6 +17,7 @@ import { defineTool } from '@deepseek-ai/dsh-tools'
 import type { ObjectJsonSchema } from '@deepseek-ai/dsh-tools'
 import { releaseChildBudget, type ChildBudget } from './guard.js'
 import { projectThinkResult } from './project.js'
+import { buildRefinePrompt, runVerifier } from './verify.js'
 
 /** Provider that runs the thinking child. */
 export const DEFAULT_THINK_PROVIDER = 'fork'
@@ -87,6 +88,15 @@ export const THINK_OUTPUT_SCHEMA: ObjectJsonSchema = {
 interface ThinkDeepArgs {
   task: string
   focus?: string
+  verify?: boolean
+}
+
+/** What the verification passes found. */
+export interface ThinkVerification {
+  rounds: number
+  verdict: 'confirmed' | 'conflict'
+  problems: string[]
+  evidence: { url: string, title?: string, snippet?: string }[]
 }
 
 /** The canonical `think_deep` output value. */
@@ -95,6 +105,7 @@ interface ThinkDeepOutput {
   keyPoints: string[]
   assumptions: string[]
   risks: string[]
+  verification?: ThinkVerification
 }
 
 /** Thinking route configuration. */
@@ -102,6 +113,9 @@ export interface ThinkConfig {
   provider: string
   maxChildCalls: number
   timeoutMs: number
+  verifyRounds: number
+  verifyProvider: string
+  verifyTimeoutMs: number
 }
 
 /**
@@ -117,6 +131,7 @@ export function parseThinkDeepArgs(args: ThinkDeepArgs): ThinkDeepArgs {
   return {
     task: args.task,
     ...args.focus !== undefined ? { focus: args.focus } : {},
+    ...args.verify !== undefined ? { verify: args.verify } : {},
   }
 }
 
@@ -137,6 +152,22 @@ export function formatThinkDeepOutput(value: ThinkDeepOutput): string {
   }
   if (value.risks.length > 0) {
     parts.push(`Risks:\n${value.risks.map((item) => `- ${item}`).join('\n')}`)
+  }
+  if (value.verification !== undefined) {
+    const { rounds, verdict, problems, evidence } = value.verification
+    const head = verdict === 'confirmed'
+      ? `Verified against ${evidence.length} source(s) over ${rounds} pass(es): no unsupported part found.`
+      : `Verification found ${problems.length} unsupported part(s) over ${rounds} pass(es).`
+    const lines = [head]
+    if (problems.length > 0) {
+      lines.push(`Problems:\n${problems.map((problem) => `- ${problem}`).join('\n')}`)
+    }
+    if (evidence.length > 0) {
+      lines.push(`Verification sources:\n${
+        evidence.map((item) => `- [${item.title ?? item.url}](${item.url})`).join('\n')
+      }`)
+    }
+    parts.push(lines.join('\n'))
   }
   return parts.join('\n\n')
 }
@@ -238,6 +269,11 @@ export function applyThinkTool(ctx: Context, config: ThinkConfig, budget: ChildB
         type: 'string',
         description: 'What the conclusion must settle, when the task is broader than the question.',
       },
+      verify: {
+        type: 'boolean',
+        description: 'Set false to skip the verification pass. Verification costs one more subagent and '
+          + 'one more round trip; it is what catches a conclusion the sources do not support.',
+      },
     },
     output: {
       schema: {
@@ -248,13 +284,37 @@ export function applyThinkTool(ctx: Context, config: ThinkConfig, budget: ChildB
           keyPoints: { type: 'array', required: true, items: { type: 'string' } },
           assumptions: { type: 'array', required: true, items: { type: 'string' } },
           risks: { type: 'array', required: true, items: { type: 'string' } },
+          verification: {
+            type: 'object',
+            additionalProperties: false,
+            properties: {
+              rounds: { type: 'number', required: true },
+              verdict: { type: 'string', required: true, enum: ['confirmed', 'conflict'] },
+              problems: { type: 'array', required: true, items: { type: 'string' } },
+              evidence: {
+                type: 'array',
+                required: true,
+                items: {
+                  type: 'object',
+                  additionalProperties: false,
+                  properties: {
+                    url: { type: 'string', required: true },
+                    title: { type: 'string' },
+                    snippet: { type: 'string' },
+                  },
+                },
+              },
+            },
+          },
         },
       },
       render: (_args, value) => [{ type: 'text', text: formatThinkDeepOutput(value as ThinkDeepOutput) }],
     },
     // A delegated thought is a foreground operation on the parent's behalf.
+    // Its deadline covers the whole loop: one thinking child, then a verifier
+    // per round, so a single child's budget is not the tool's budget.
     isConcurrencySafe: () => false,
-    timeoutMs: config.timeoutMs,
+    timeoutMs: config.timeoutMs + config.verifyTimeoutMs * Math.max(1, config.verifyRounds),
     async execute(args, exec) {
       const parsed = parseThinkDeepArgs(args as ThinkDeepArgs)
       const parent = exec.agent
@@ -271,41 +331,85 @@ export function applyThinkTool(ctx: Context, config: ThinkConfig, budget: ChildB
       const candidates = knownChildTools === undefined
         ? THINK_DENY_CANDIDATES.filter((name) => ctx.tools.get(name, parent) !== undefined)
         : THINK_DENY_CANDIDATES.filter((name) => knownChildTools!.has(name))
-      const base = {
-        parent,
-        prompt: [{
-          type: 'text',
-          text: buildThinkChildPrompt(parsed.task, parsed.focus, config.maxChildCalls),
-        }] as ContentBlock[],
-        signal: exec.signal,
-        outputSchema: THINK_OUTPUT_SCHEMA,
-      }
-      let run
-      try {
-        run = await ctx.subagents.start(
-          config.provider,
-          candidates.length > 0 ? { ...base, toolFilter: { deny: candidates } } : base,
+      const maxRounds = parsed.verify === false ? 0 : config.verifyRounds
+
+      let prompt = buildThinkChildPrompt(parsed.task, parsed.focus, config.maxChildCalls)
+      let conclusion = ''
+      let keyPoints: string[] = []
+      let assumptions: string[] = []
+      let risks: string[] = []
+      let verification: ThinkVerification | undefined
+
+      for (let round = 1; round <= Math.max(1, maxRounds); round++) {
+        const base = {
+          parent,
+          prompt: [{ type: 'text', text: prompt }] as ContentBlock[],
+          signal: exec.signal,
+          outputSchema: THINK_OUTPUT_SCHEMA,
+        }
+        let run
+        try {
+          run = await ctx.subagents.start(
+            config.provider,
+            candidates.length > 0 ? { ...base, toolFilter: { deny: candidates } } : base,
+          )
+        } catch (error: unknown) {
+          if (!isRestrictionFailure(error)) throw error
+          // The failed spawn published no child, so retrying is safe. The child's
+          // own restrictable names are recovered from the failure and used
+          // instead; a thought must never die because a profile's scopes
+          // disagree.
+          const corrected = denyFromRestrictionFailure(error, THINK_DENY_CANDIDATES)
+          if (corrected !== undefined) knownChildTools = new Set(corrected)
+          run = await ctx.subagents.start(
+            config.provider,
+            corrected === undefined ? base : { ...base, toolFilter: { deny: corrected } },
+          )
+        }
+        budget.sessions.add(run.id)
+        let projected: ThinkDeepOutput
+        try {
+          projected = projectThinkResult(await run.result)
+        } finally {
+          releaseChildBudget(budget, run.id)
+          await run.dispose()
+        }
+        conclusion = projected.conclusion
+        keyPoints = projected.keyPoints
+        assumptions = projected.assumptions
+        risks = projected.risks
+
+        if (maxRounds === 0) break
+        // The verifier is a separate child with a clean context and an
+        // adversarial role: it is handed the conclusion and asked to refute it.
+        const verdict = await runVerifier(
+          ctx,
+          { provider: config.verifyProvider, timeoutMs: config.verifyTimeoutMs },
+          budget,
+          parent,
+          exec.signal,
+          conclusion,
+          keyPoints,
+          parsed.task,
+          config.maxChildCalls,
         )
-      } catch (error: unknown) {
-        if (!isRestrictionFailure(error)) throw error
-        // The failed spawn published no child, so retrying is safe. The child's
-        // own restrictable names are recovered from the failure and used
-        // instead; a thought must never die because a profile's scopes
-        // disagree.
-        const corrected = denyFromRestrictionFailure(error, THINK_DENY_CANDIDATES)
-        if (corrected !== undefined) knownChildTools = new Set(corrected)
-        run = await ctx.subagents.start(
-          config.provider,
-          corrected === undefined ? base : { ...base, toolFilter: { deny: corrected } },
-        )
+        verification = {
+          rounds: round,
+          verdict: verdict.verdict,
+          problems: verdict.problems,
+          evidence: verdict.evidence,
+        }
+        if (verdict.verdict !== 'conflict') break
+        if (round >= maxRounds) break
+        prompt = buildRefinePrompt(parsed.task, conclusion, verdict.problems, verdict.evidence)
       }
-      budget.sessions.add(run.id)
-      try {
-        const result = await run.result
-        return projectThinkResult(result)
-      } finally {
-        releaseChildBudget(budget, run.id)
-        await run.dispose()
+
+      return {
+        conclusion,
+        keyPoints,
+        assumptions,
+        risks,
+        ...verification !== undefined ? { verification } : {},
       }
     },
     presentCall: (args) => {

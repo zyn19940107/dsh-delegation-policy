@@ -71,7 +71,44 @@ profile entry:
         thinkProvider: fork
         maxThinkCalls: 5
         thinkTimeoutMs: 900000
+        verifyRounds: 2
+        verifyProvider: spawn
+        verifyTimeoutMs: 600000
 ```
+
+## Verification: a second child that refutes the conclusion
+
+A child that reasons over a corpus can derive a conclusion its sources do not support — a
+retrieved fact and a guessed consequence look identical from the outside. The plugin closes that
+gap the way a test suite closes it: with a **separate child whose job is to refute the
+conclusion**.
+
+`think_deep` runs that pass by default:
+
+```
+think_deep(task, focus, verify?)
+  └─ fork#1   reasons over this conversation      → conclusion C1
+       └─ spawn#1  adversarial review of C1        → confirmed | conflict
+            └─ on conflict and a round left: fork#2 revises C1 against the objections
+                 └─ spawn#2 reviews the revision  → confirmed | conflict
+  returns the final conclusion plus the verification record
+```
+
+The verifier is a `spawn` child, so it inherits none of the thinking child's reasoning and reads
+the conclusion cold. It is told to attack the **derived** claims, and it is told how to search:
+for what the thing actually *is*, not for a phrase that happens to contain its words — the
+difference between "what is this for" (finds a corn-shaped hot pad holder) and "corn and this"
+(finds corn).
+
+The verification record travels with the conclusion: the number of passes, the verdict, the
+problems the reviewer raised, and the sources it used. A conclusion that nobody could source is
+reported as such rather than dropped silently.
+
+A verifier that answered in prose delivered no verdict, and that is not a confirmation: the pass
+is reported as a conflict with the prose as the objection.
+
+Verification costs one extra child and one extra round trip. Pass `verify: false` for a cheap
+question, or set `verifyRounds: 0` in the configuration to turn the pass off entirely.
 
 ## Configuration
 
@@ -85,6 +122,9 @@ profile entry:
 | `thinkProvider` | `fork` | provider that runs the thinking child |
 | `maxThinkCalls` | `5` | retrieval calls the thinking child may make |
 | `thinkTimeoutMs` | `900000` | budget for one delegated thought |
+| `verifyRounds` | `2` | verification passes a delegated thought may run |
+| `verifyProvider` | `spawn` | provider that runs the verifier |
+| `verifyTimeoutMs` | `600000` | budget for one verification pass |
 
 The search backend is a separate concern: **this plugin never chooses one.** Point
 `web.searchProvider` at whatever the profile already pins.
