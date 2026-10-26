@@ -76,6 +76,17 @@ profile entry:
         verifyTimeoutMs: 600000
 ```
 
+## A judgement inside a larger task
+
+A task that mixes a judgement with mechanical work is two tasks: delegate the judgement first, with the
+judgement in `focus`, and do the work afterwards.
+
+The exemption for a continuous edit covers the edit — it keeps one edit from being broken into
+fragments — and it does not cover the reasoning. A model read it the other way once: it treated a
+whole implementation task as one continuous edit and reasoned through the geometry inside it, changing
+its model of the part three times before the user pointed out that the direction was wrong. The
+guidance now says so explicitly, and a spec keeps the wording from being narrowed back.
+
 ## The pipeline: retrieve, reason, verify
 
 ```

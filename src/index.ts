@@ -81,9 +81,13 @@ export const DELEGATION_GUIDANCE = [
   + 'material rather than from memory. It returns a structured conclusion with what was retrieved and a '
   + 'verification record.',
   '- subagent: a fresh subagent for a self-contained task that needs neither of the above.',
-  'Reach for these on your own — the user should not have to ask for delegation. Do not delegate when '
-  + 'one grep, one file read, or one small edit does it, when the next step depends entirely on the '
-  + 'result, or when delegating would split up a continuous edit.',
+  'Reach for these on your own — the user should not have to ask for delegation. A task that mixes a '
+  + 'judgement with mechanical work is two tasks: delegate the judgement first, with the judgement in '
+  + 'the focus, and do the work yourself afterwards. A continuous edit is not a reason to reason inside '
+  + 'it — "where does this part actually end, which way does the force go, which alternative is better" '
+  + 'is a question whatever else the turn is doing.',
+  'Do not delegate when one grep, one file read, or one small edit does it, when the next step depends '
+  + 'entirely on the result, or when delegating would break one continuous edit into fragments.',
 ].join('\n')
 
 /** Plugin config. */

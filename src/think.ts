@@ -320,9 +320,11 @@ export function applyThinkTool(ctx: Context, config: ThinkConfig, budget: ChildB
       + 'reasoning starts from material rather than from memory; a second subagent then tries to refute '
       + 'the conclusion. Use it whenever the question asks for a judgement — a recommendation, a '
       + 'comparison, a trade-off, a design, a risk analysis — and not only for a fact; the user need not '
-      + 'ask for it. It returns a structured conclusion — recommendation, key points, assumptions, and '
-      + 'risks — with what was retrieved and a verification record, while the reasoning stays in the '
-      + 'child.',
+      + 'ask for it. A task that mixes a judgement with mechanical work is two tasks: delegate the '
+      + 'judgement first, with the judgement in the focus, and do the work afterwards — a continuous edit '
+      + 'is not a reason to reason inside it. It returns a structured conclusion — recommendation, key '
+      + 'points, assumptions, and risks — with what was retrieved and a verification record, while the '
+      + 'reasoning stays in the child.',
     parameters: {
       task: {
         type: 'string',

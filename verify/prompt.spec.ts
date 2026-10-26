@@ -10,6 +10,7 @@
 import { buildRetrievalPrompt } from '../src/search.js'
 import { buildThinkChildPrompt } from '../src/think.js'
 import { buildRefinePrompt } from '../src/verify.js'
+import { DELEGATION_GUIDANCE } from '../src/index.js'
 
 let failures = 0
 
@@ -70,6 +71,18 @@ console.log('buildRefinePrompt')
   check('carries the retrieved material', prompt.includes('The source says otherwise.'))
   check('carries the retrieved source', prompt.includes('https://example.test/b'))
   check('asks for a corrected conclusion', prompt.includes('corrected conclusion'))
+}
+
+console.log('DELEGATION_GUIDANCE')
+{
+  check('says the agent reaches for delegation on its own', DELEGATION_GUIDANCE.includes('Reach for these on your own'))
+  check('names the judgement trigger', DELEGATION_GUIDANCE.includes('asks for a judgement'))
+  check('separates a judgement from the work around it', DELEGATION_GUIDANCE.includes('is two tasks'))
+  check('says a continuous edit is not a reason to reason inside it', DELEGATION_GUIDANCE.includes('not a reason to reason inside'))
+  // The exemption that was read too widely: it covered the whole task instead
+  // of the edit, and a model used it to reason inside a continuous edit.
+  check('drops the over-broad exemption wording', !DELEGATION_GUIDANCE.includes('split up a continuous edit'))
+  check('keeps the fragment exemption, scoped to the edit', DELEGATION_GUIDANCE.includes('break one continuous edit into fragments'))
 }
 
 console.log(failures === 0 ? '\nall checks passed' : `\n${failures} check(s) failed`)
