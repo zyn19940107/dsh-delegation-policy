@@ -50,24 +50,35 @@ export const name = 'delegation-policy'
 export const inject = ['tools', 'subagents', 'systemPrompt']
 
 /**
- * The routes, as the model should see them. The two dedicated tools carry
- * constraints the generic delegation tools do not — a clean context, a reading
- * budget, a conclusion-only result — so they are the default for those two
- * shapes of work.
+ * The delegation policy, as the model should see it.
+ *
+ * The two dedicated tools carry constraints the generic delegation tools do
+ * not — a clean context, a reading budget, a conclusion-only result, a
+ * verification pass — so they are the default for the two shapes of work they
+ * cover. The policy says when to reach for each route and when not to delegate
+ * at all, so that delegation is the agent's own judgement rather than something
+ * the user has to ask for.
+ *
+ * This text is part of the system prompt and is re-sent every turn, so it
+ * stays as short as the policy allows.
  */
 export const DELEGATION_GUIDANCE = [
-  'Delegation routes:',
+  'Delegation:',
   '- search_web: web search, delegated to a subagent with a clean context. Use it for any fact that '
-  + 'lives outside this conversation. It returns a distilled answer and its citations; the retrieved '
+  + 'lives outside this conversation. It returns a distilled answer and its citations, and the retrieved '
   + 'pages never enter this conversation. Before searching, check what the local source already '
   + 'answers: for a question about this codebase or the running runtime, the installed source is more '
   + 'authoritative than any published document.',
-  '- think_deep: a hard question delegated to a subagent that inherits this conversation and reasons '
-  + 'over it at length. Use it when the reasoning depends on what has already been established here, or '
-  + 'when you want a second opinion on your own plan. It returns a structured conclusion — '
-  + 'recommendation, key points, assumptions, risks — and its reasoning stays in the child.',
+  '- think_deep: a hard question delegated to a subagent that inherits this conversation, reasons over '
+  + 'it at length, and is then checked by a second subagent that tries to refute the conclusion. Use it '
+  + 'whenever the question asks for a judgement — a recommendation, a comparison, a trade-off, a design, '
+  + 'a risk analysis — and not only for a fact. Judging from your own reading is where a small model is '
+  + 'weakest; the second opinion and the verification pass are what make the answer trustworthy. It '
+  + 'returns a structured conclusion with a verification record.',
   '- subagent: a fresh subagent for a self-contained task that needs neither of the above.',
-  'Prefer search_web and think_deep over the generic delegation tools for these two shapes of work.',
+  'Reach for these on your own — the user should not have to ask for delegation. Do not delegate when '
+  + 'one grep, one file read, or one small edit does it, when the next step depends entirely on the '
+  + 'result, or when delegating would split up a continuous edit.',
 ].join('\n')
 
 /** Plugin config. */

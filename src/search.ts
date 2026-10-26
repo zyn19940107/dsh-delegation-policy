@@ -202,8 +202,9 @@ export function buildSearchChildPrompt(query: string, focus: string | undefined,
 export function applySearchTool(ctx: Context, config: SearchConfig, budget: ChildBudget): void {
   ctx.tools.register(defineTool({
     name: 'search_web',
-    description: 'Search the web for current information. The search runs in a delegated subagent, which '
-      + 'reads what it needs and returns a concise answer plus the sources it used.',
+    description: 'Search the web for current information. Use it for any fact that lives outside this '
+      + 'conversation; the user need not ask for it. The search runs in a delegated subagent, which reads '
+      + 'what it needs and returns a concise answer plus the sources it used.',
     parameters: {
       query: {
         type: 'string',

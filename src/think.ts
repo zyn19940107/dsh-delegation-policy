@@ -257,8 +257,11 @@ export function applyThinkTool(ctx: Context, config: ThinkConfig, budget: ChildB
   ctx.tools.register(defineTool({
     name: 'think_deep',
     description: 'Delegate a hard question to a subagent that inherits this conversation and reasons over '
-      + 'it at length. It returns a structured conclusion — recommendation, key points, assumptions, and '
-      + 'risks — while its reasoning stays in the child.',
+      + 'it at length, then has a second subagent try to refute the conclusion. Use it whenever the '
+      + 'question asks for a judgement — a recommendation, a comparison, a trade-off, a design, a risk '
+      + 'analysis — and not only for a fact; the user need not ask for it. It returns a structured '
+      + 'conclusion — recommendation, key points, assumptions, and risks — with a verification record, '
+      + 'while the reasoning stays in the child.',
     parameters: {
       task: {
         type: 'string',
