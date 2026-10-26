@@ -8,12 +8,13 @@
  */
 
 import type { Context } from '@deepseek-ai/cordis'
+import type { Agent } from '@deepseek-ai/dsh-agent'
 import type { ContentBlock } from '@deepseek-ai/dsh-llm'
 import type {} from '@deepseek-ai/dsh-subagent'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import type { ObjectJsonSchema } from '@deepseek-ai/dsh-tools'
 import { registerChild, releaseChildBudget, type ChildBudget } from './guard.js'
-import { normalizeSources, projectSearchResult } from './project.js'
+import { normalizeSources, projectSearchResult, type SearchProjection } from './project.js'
 
 /** Provider that runs the search child. */
 export const DEFAULT_SEARCH_PROVIDER = 'spawn'
@@ -192,6 +193,76 @@ export function buildSearchChildPrompt(query: string, focus: string | undefined,
 }
 
 /**
+ * Build the retrieval child's instruction.
+ *
+ * The retrieval child gathers the external knowledge that bears on a question;
+ * it does not answer it. The reasoning happens later, in a different child, over
+ * this material — so the child is told to report material rather than a
+ * conclusion.
+ *
+ * @param task - the question the knowledge is gathered for.
+ * @param focus - what the knowledge must cover, when the caller narrowed it.
+ * @param maxCalls - the retrieval calls the child has.
+ * @returns the child's instruction.
+ */
+export function buildRetrievalPrompt(task: string, focus: string | undefined, maxCalls: number): string {
+  const parts: string[] = [`Find the external knowledge that bears on this question: ${task}`]
+  if (focus !== undefined && focus.trim().length > 0) {
+    parts.push(`Only gather what matters for this question: ${focus}`)
+  }
+  parts.push(
+    'Use the web_search tool to find candidate sources. When a snippet is not enough, use web_fetch to '
+    + 'read the most promising page.',
+    `You have a reading budget of ${maxCalls} retrieval calls. Spend it on the claims the question `
+    + 'actually depends on, not on the topic in general.',
+    'Then deliver your result with the structured_output tool:',
+    '- answer: a dense summary of the external knowledge that bears on the question — the facts, the '
+    + 'versions, the numbers, the dates, and where the sources disagree. At most eight sentences. This '
+    + 'is material for someone else to reason over, not a recommendation and not a conclusion.',
+    '- sources: the two to five sources you actually used, each with its url, its title, and a '
+    + 'one-sentence snippet under 200 characters.',
+    'Do not paste long excerpts. Do not list a source you did not use.',
+  )
+  return parts.join('\n\n')
+}
+
+/**
+ * Run one delegated search child and project its result.
+ *
+ * @param ctx - the plugin context supplying the registries.
+ * @param config - the resolved search configuration.
+ * @param budget - the budget that covers this route's children.
+ * @param parent - the agent the search runs on behalf of.
+ * @param signal - the caller's signal.
+ * @param prompt - the child's instruction.
+ * @returns the parent's view of what the child found.
+ */
+export async function delegateSearch(
+  ctx: Context,
+  config: SearchConfig,
+  budget: ChildBudget,
+  parent: Agent,
+  signal: AbortSignal,
+  prompt: string,
+): Promise<SearchProjection> {
+  const run = await ctx.subagents.start(config.provider, {
+    parent,
+    prompt: [{ type: 'text', text: prompt }] as ContentBlock[],
+    signal,
+    outputSchema: CHILD_OUTPUT_SCHEMA,
+    toolFilter: { allow: [...CHILD_TOOLS] },
+  })
+  registerChild(budget, run.id, config.maxChildCalls)
+  try {
+    const result = await run.result
+    return projectSearchResult(result, config.maxSources, config.maxSnippetChars)
+  } finally {
+    releaseChildBudget(budget, run.id)
+    await run.dispose()
+  }
+}
+
+/**
  * Register the `search_web` tool.
  *
  * @param ctx - the plugin context supplying the registries.
@@ -255,23 +326,18 @@ export function applySearchTool(ctx: Context, config: SearchConfig, budget: Chil
         throw new Error('search_web needs an agent to delegate from')
       }
       const limit = parsed.maxSources ?? config.maxSources
-      const run = await ctx.subagents.start(config.provider, {
+      const projection = await delegateSearch(
+        ctx,
+        { ...config, maxSources: limit },
+        budget,
         parent,
-        prompt: [{
-          type: 'text',
-          text: buildSearchChildPrompt(parsed.query, parsed.focus, config.maxChildCalls),
-        }] as ContentBlock[],
-        signal: exec.signal,
-        outputSchema: CHILD_OUTPUT_SCHEMA,
-        toolFilter: { allow: [...CHILD_TOOLS] },
-      })
-      registerChild(budget, run.id, config.maxChildCalls)
-      try {
-        const result = await run.result
-        return projectSearchResult(result, limit, config.maxSnippetChars)
-      } finally {
-        releaseChildBudget(budget, run.id)
-        await run.dispose()
+        exec.signal,
+        buildSearchChildPrompt(parsed.query, parsed.focus, config.maxChildCalls),
+      )
+      return {
+        answer: projection.answer,
+        sources: projection.sources,
+        truncated: projection.truncated,
       }
     },
     presentCall: (args) => {

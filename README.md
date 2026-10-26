@@ -76,6 +76,30 @@ profile entry:
         verifyTimeoutMs: 600000
 ```
 
+## The pipeline: retrieve, reason, verify
+
+```
+think_deep(task, focus, verify?)
+  └─ spawn#0  retrieves the external knowledge the question depends on
+       └─ fork#1  reasons over this conversation AND that material → conclusion
+            └─ spawn#1  tries to refute the conclusion      → confirmed | conflict
+                 └─ on conflict and a round left: fork#2 revises the conclusion
+                      └─ spawn#2 reviews the revision
+  returns the conclusion, what was retrieved, and the verification record
+```
+
+**Retrieval is the first step, not a judgement.** Whether to look something up is exactly the
+decision a model cannot make well: it cannot tell what it does not know, and the training prior
+makes answering from memory the default continuation. So the pipeline retrieves first, in its own
+child, and the reasoning starts from material rather than from memory. The material goes into the
+thinking child's prompt — the parent's context never sees the corpus — and the child is told to
+treat it as retrieved material rather than as fact.
+
+The retrieving child gathers knowledge, not a conclusion: the reasoning happens in a different
+child, over what it found.
+
+Set `retrieveFirst: false` to turn the step off.
+
 ## Verification: a second child that refutes the conclusion
 
 A child that reasons over a corpus can derive a conclusion its sources do not support — a
@@ -125,6 +149,8 @@ question, or set `verifyRounds: 0` in the configuration to turn the pass off ent
 | `verifyRounds` | `2` | verification passes a delegated thought may run |
 | `verifyProvider` | `spawn` | provider that runs the verifier |
 | `verifyTimeoutMs` | `600000` | budget for one verification pass |
+| `retrieveFirst` | `true` | whether a delegated thought retrieves before it reasons |
+| `retrieveMaxChildCalls` | `3` | retrieval calls the retrieving child may make |
 
 Every delegated child carries a retrieval budget: `web_search` and `web_fetch` calls are counted per
 child session, and the child is told to answer with what it has when the budget runs out. A child
@@ -138,8 +164,10 @@ The search backend is a separate concern: **this plugin never chooses one.** Poi
 ## The thinking child's tool set
 
 A child that reasons about the work has no business mutating it, so the thinking child runs with
-the mutating tools restricted — `write`, `edit`, `pwsh`, `present`, `workflow`, and the delegation
-tools themselves are denied, leaving 22 of the profile's 30 tools.
+the mutating tools restricted — the shell and the file-writing tools of whatever this profile
+mounts, `present`, `workflow`, and the delegation tools themselves are denied, leaving the read
+and search tools. The shell and file-writing names are matched by pattern (`bash`, `pwsh`,
+`ops_bash`, `write`, `edit`, …) rather than listed, because a profile names them differently.
 
 Resolving that list is subtle. `tools.restrict()` rejects a name the child does not know, and the
 child's scope is **neither** the parent's scope **nor** the global view — a name the parent can see

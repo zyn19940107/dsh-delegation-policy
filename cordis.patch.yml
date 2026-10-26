@@ -23,3 +23,5 @@
         verifyRounds: 2
         verifyProvider: spawn
         verifyTimeoutMs: 600000
+        retrieveFirst: true
+        retrieveMaxChildCalls: 3

@@ -18,7 +18,7 @@ const root = join(dirname(fileURLToPath(import.meta.url)), '..')
 // The bundle is written inside the package: the system temp directory is not
 // writable by the esbuild child process here.
 const work = join(root, 'verify', '.build')
-const specs = ['projection.spec.ts', 'budget.spec.ts']
+const specs = ['projection.spec.ts', 'budget.spec.ts', 'prompt.spec.ts']
 
 try {
   await mkdir(work, { recursive: true })
@@ -31,6 +31,9 @@ try {
       platform: 'node',
       target: 'es2024',
       format: 'esm',
+      // The workspace packages stay external: one of them reads its own
+      // package.json by relative path, which the bundle would break.
+      external: ['@deepseek-ai/*'],
       logLevel: 'warning',
     })
     const run = spawnSync(process.execPath, [outfile], { stdio: 'inherit' })

@@ -140,6 +140,7 @@ export function buildVerifierPrompt(
  * @param conclusion - the conclusion under challenge.
  * @param problems - the verifier's objections.
  * @param evidence - the sources the verifier used.
+ * @param retrieved - the external knowledge the pipeline gathered first.
  * @returns the refinement instruction.
  */
 export function buildRefinePrompt(
@@ -147,6 +148,7 @@ export function buildRefinePrompt(
   conclusion: string,
   problems: readonly string[],
   evidence: readonly { url: string, title?: string, snippet?: string }[],
+  retrieved?: { answer: string, sources: { url: string, title?: string }[] },
 ): string {
   const lines: string[] = [
     'A reviewer checked the conclusion below against its sources and found parts it cannot support. '
@@ -163,13 +165,28 @@ export function buildRefinePrompt(
     '',
     'What the sources actually say:',
     ...evidence.map((item) => `- [${item.title ?? item.url}](${item.url})${item.snippet === undefined ? '' : ` — ${item.snippet}`}`),
+  ]
+  if (retrieved !== undefined) {
+    lines.push(
+      '',
+      'External knowledge retrieved before the first pass started:',
+      '---',
+      retrieved.answer,
+      ...retrieved.sources.length > 0
+        ? [`Sources: ${retrieved.sources.map((source) => (source.title === undefined ? source.url : `[${source.title}](${source.url})`)).join(', ')}`]
+        : [],
+      '---',
+      'Treat it as retrieved material, not as established fact.',
+    )
+  }
+  lines.push(
     '',
     'Address every problem. Remove or downgrade each part the sources do not support: a claim that '
     + 'cannot be sourced must not survive as an assertion, and a guess must be marked as a guess. Keep '
     + 'the parts the sources do support, and keep the structure you were asked for: conclusion, key '
     + 'points, assumptions, risks.',
     'Then deliver your result with the structured_output tool.',
-  ]
+  )
   return lines.join('\n')
 }
 

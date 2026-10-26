@@ -32,6 +32,9 @@ import {
   DEFAULT_SEARCH_TIMEOUT_MS,
 } from './search.js'
 import {
+  DEFAULT_RETRIEVE_MAX_CHILD_CALLS,
+} from './think.js'
+import {
   applyThinkTool,
   DEFAULT_MAX_THINK_CALLS,
   DEFAULT_THINK_PROVIDER,
@@ -73,8 +76,10 @@ export const DELEGATION_GUIDANCE = [
   + 'it at length, and is then checked by a second subagent that tries to refute the conclusion. Use it '
   + 'whenever the question asks for a judgement — a recommendation, a comparison, a trade-off, a design, '
   + 'a risk analysis — and not only for a fact. Judging from your own reading is where a small model is '
-  + 'weakest; the second opinion and the verification pass are what make the answer trustworthy. It '
-  + 'returns a structured conclusion with a verification record.',
+  + 'weakest; the second opinion and the verification pass are what make the answer trustworthy. The '
+  + 'pipeline retrieves the external knowledge first, in its own child, so the reasoning starts from '
+  + 'material rather than from memory. It returns a structured conclusion with what was retrieved and a '
+  + 'verification record.',
   '- subagent: a fresh subagent for a self-contained task that needs neither of the above.',
   'Reach for these on your own — the user should not have to ask for delegation. Do not delegate when '
   + 'one grep, one file read, or one small edit does it, when the next step depends entirely on the '
@@ -105,6 +110,10 @@ export interface Config {
   verifyProvider: Volatile<string>
   /** Budget for one verification pass, in milliseconds. */
   verifyTimeoutMs: Volatile<number>
+  /** Whether a delegated thought retrieves before it reasons. */
+  retrieveFirst: Volatile<boolean>
+  /** Retrieval calls the retrieving child may make. */
+  retrieveMaxChildCalls: Volatile<number>
 }
 
 export const Config = z.object({
@@ -119,6 +128,8 @@ export const Config = z.object({
   verifyRounds: z.number().step(1).min(0).default(DEFAULT_VERIFY_ROUNDS).volatile(),
   verifyProvider: z.string().default(DEFAULT_VERIFY_PROVIDER).volatile(),
   verifyTimeoutMs: z.number().step(1).min(1).default(DEFAULT_VERIFY_TIMEOUT_MS).volatile(),
+  retrieveFirst: z.boolean().default(true).volatile(),
+  retrieveMaxChildCalls: z.number().step(1).min(1).default(DEFAULT_RETRIEVE_MAX_CHILD_CALLS).volatile(),
 })
 
 /**
@@ -170,5 +181,14 @@ export function apply(ctx: Context, config: Config): void {
     verifyRounds: config.verifyRounds.get(),
     verifyProvider: config.verifyProvider.get(),
     verifyTimeoutMs: config.verifyTimeoutMs.get(),
+    retrieveFirst: config.retrieveFirst.get(),
+    retrieveMaxChildCalls: config.retrieveMaxChildCalls.get(),
+    search: {
+      provider: config.searchProvider.get(),
+      maxSources: config.maxSources.get(),
+      maxSnippetChars: config.maxSnippetChars.get(),
+      maxChildCalls: config.maxChildCalls.get(),
+      timeoutMs: config.searchTimeoutMs.get(),
+    },
   }, budget)
 }
