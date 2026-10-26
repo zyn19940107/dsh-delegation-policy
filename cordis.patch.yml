@@ -3,7 +3,7 @@
 # One row mounts this package. It replaces nothing: the official `web_search`
 # tool stays mounted and stays visible to subagents. This plugin adds the two
 # delegation routes, a guard that refuses a direct `web_search` outside a
-# delegation, and a reading budget every delegated child has to respect.
+# delegation, a reading budget every delegated child has to respect, and a guard
 #
 # The plugin never chooses a search backend itself — the search provider is
 # whatever the profile already pins.

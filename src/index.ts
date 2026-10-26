@@ -22,7 +22,7 @@
 import type { Context, Volatile } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
 import type { PreToolDecision, ToolExecution } from '@deepseek-ai/dsh-tools'
-import { checkChildBudget, createChildBudget, createSearchGuard } from './guard.js'
+import { checkChildBudget, createChildBudget, createWebGuard } from './guard.js'
 import {
   applySearchTool,
   DEFAULT_MAX_CHILD_CALLS,
@@ -69,9 +69,10 @@ export const DELEGATION_GUIDANCE = [
   'Delegation:',
   '- search_web: web search, delegated to a subagent with a clean context. Use it for any fact that '
   + 'lives outside this conversation. It returns a distilled answer and its citations, and the retrieved '
-  + 'pages never enter this conversation. Before searching, check what the local source already '
-  + 'answers: for a question about this codebase or the running runtime, the installed source is more '
-  + 'authoritative than any published document.',
+  + 'pages never enter this conversation. It is the only route to the web from this conversation — a '
+  + 'direct page fetch is refused here, and the subagent is the one that reads the pages. Before '
+  + 'searching, check what the local source already answers: for a question about this codebase or the '
+  + 'running runtime, the installed source is more authoritative than any published document.',
   '- think_deep: a hard question delegated to a subagent that inherits this conversation, reasons over '
   + 'it at length, and is then checked by a second subagent that tries to refute the conclusion. Use it '
   + 'whenever the question asks for a judgement — a recommendation, a comparison, a trade-off, a design, '
@@ -166,7 +167,7 @@ export function apply(ctx: Context, config: Config): void {
       : DELEGATION_GUIDANCE,
   })
 
-  ctx.tools.guard(createSearchGuard())
+  ctx.tools.guard(createWebGuard())
 
   ctx.on('tools/pre-execute', async (
     exec: ToolExecution,

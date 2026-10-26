@@ -163,6 +163,19 @@ question, or set `verifyRounds: 0` in the configuration to turn the pass off ent
 | `retrieveFirst` | `true` | whether a delegated thought retrieves before it reasons |
 | `retrieveMaxChildCalls` | `3` | retrieval calls the retrieving child may make |
 
+## The parent's only route to the web
+
+The guard refuses web_search, web_fetch and ead_page in the parent conversation. A delegated
+child may use all three; the parent may not.
+
+Refusing only the search was not enough: measured in the sandbox, a model answered "what does this
+page say" by fetching it, and 16 KB of page landed in the conversation the delegation exists to keep
+clean. With the fetch refused as well, the same prompt put the whole 32 KB of pages in the child and
+the parent received a 2.4 KB distilled answer.
+
+The parent that needs the original wording of a page gets it from the child, which reports it with its
+citations.
+
 Every delegated child carries a retrieval budget: `web_search` and `web_fetch` calls are counted per
 child session, and the child is told to answer with what it has when the budget runs out. A child
 this plugin started carries the limit of its route (`maxChildCalls` for a search child,

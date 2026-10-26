@@ -15,6 +15,14 @@ import type { ToolExecution, ToolGuard } from '@deepseek-ai/dsh-tools'
 export const RETRIEVAL_TOOLS: readonly string[] = ['web_search', 'web_fetch']
 
 /**
+ * Web tools the parent conversation may not call.
+ *
+ * The parent has one way to the web: `search_web`, which delegates. A tool
+ * that can pull a page into the parent is a way around that delegation.
+ */
+export const PARENT_DENIED_WEB_TOOLS: readonly string[] = ['web_search', 'web_fetch', 'read_page']
+
+/**
  * Per-child retrieval accounting.
  *
  * A child is charged by the session id it reports for itself, so the accounting
@@ -92,21 +100,27 @@ export function releaseChildBudget(budget: ChildBudget, sessionId: string): void
 }
 
 /**
- * Refuse a direct `web_search` call from anything but a delegated subagent.
+ * Refuse a direct call to a web tool from anything but a delegated subagent.
+ *
  * A subagent's own session header records `origin: 'subagent'`, which is what
  * separates a delegation's own child from the conversation that asked for it.
+ *
+ * Every tool that can pull a page into the parent is refused, not only the
+ * one that searches. A search the parent did itself is only half the problem:
+ * the model answered "what does this page say" by fetching it, and the page
+ * landed in the conversation that the delegation exists to keep clean.
  *
  * @param execution - the call under evaluation.
  * @returns the denial reason, or undefined to leave the call allowed.
  */
-export function createSearchGuard(): ToolGuard {
+export function createWebGuard(): ToolGuard {
   return (execution) => {
-    if (execution.name !== 'web_search') return undefined
+    if (!PARENT_DENIED_WEB_TOOLS.includes(execution.name)) return undefined
     const agent: Agent | undefined = execution.agent
     if (agent === undefined) return undefined
     if (agent.session.header.origin === 'subagent') return undefined
-    return 'Direct web_search is disabled in this conversation. Use search_web instead: it delegates '
-      + 'the search to a subagent and returns the distilled answer with its citations, so the retrieved '
-      + 'pages never enter this conversation.'
+    return `Direct ${execution.name} is disabled in this conversation. Use search_web instead: it `
+      + 'delegates the search to a subagent and returns the distilled answer with its citations, so the '
+      + 'retrieved pages never enter this conversation. The subagent reads the pages; you get the answer.'
   }
 }
