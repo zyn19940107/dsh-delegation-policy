@@ -15,7 +15,7 @@ import type { ContentBlock } from '@deepseek-ai/dsh-llm'
 import type {} from '@deepseek-ai/dsh-subagent'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import type { ObjectJsonSchema } from '@deepseek-ai/dsh-tools'
-import { releaseChildBudget, type ChildBudget } from './guard.js'
+import { registerChild, releaseChildBudget, type ChildBudget } from './guard.js'
 import { projectThinkResult } from './project.js'
 import { buildRefinePrompt, runVerifier } from './verify.js'
 
@@ -369,7 +369,7 @@ export function applyThinkTool(ctx: Context, config: ThinkConfig, budget: ChildB
             corrected === undefined ? base : { ...base, toolFilter: { deny: corrected } },
           )
         }
-        budget.sessions.add(run.id)
+        registerChild(budget, run.id, config.maxChildCalls)
         let projected: ThinkDeepOutput
         try {
           projected = projectThinkResult(await run.result)

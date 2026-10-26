@@ -129,8 +129,11 @@ export const Config = z.object({
  * @param config - the resolved plugin configuration.
  */
 export function apply(ctx: Context, config: Config): void {
-  const searchBudget = createChildBudget(config.maxChildCalls.get())
-  const thinkBudget = createChildBudget(config.maxThinkCalls.get())
+  // One budget for every delegated child. A child this plugin started carries
+  // the limit of its route; a child some other tool started still carries the
+  // default, so a delegation policy is not bypassed by taking another route to
+  // the same place.
+  const budget = createChildBudget(Math.max(config.maxChildCalls.get(), config.maxThinkCalls.get()))
 
   ctx.systemPrompt.section({
     name: 'tool:delegation-routes',
@@ -147,10 +150,8 @@ export function apply(ctx: Context, config: Config): void {
     exec: ToolExecution,
     next,
   ): Promise<PreToolDecision> => {
-    for (const budget of [searchBudget, thinkBudget]) {
-      const denial = checkChildBudget(budget, exec)
-      if (denial !== undefined) return { kind: 'deny', reason: denial }
-    }
+    const denial = checkChildBudget(budget, exec)
+    if (denial !== undefined) return { kind: 'deny', reason: denial }
     return next()
   })
 
@@ -160,7 +161,7 @@ export function apply(ctx: Context, config: Config): void {
     maxSnippetChars: config.maxSnippetChars.get(),
     maxChildCalls: config.maxChildCalls.get(),
     timeoutMs: config.searchTimeoutMs.get(),
-  }, searchBudget)
+  }, budget)
 
   applyThinkTool(ctx, {
     provider: config.thinkProvider.get(),
@@ -169,5 +170,5 @@ export function apply(ctx: Context, config: Config): void {
     verifyRounds: config.verifyRounds.get(),
     verifyProvider: config.verifyProvider.get(),
     verifyTimeoutMs: config.verifyTimeoutMs.get(),
-  }, thinkBudget)
+  }, budget)
 }

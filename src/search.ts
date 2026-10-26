@@ -12,7 +12,7 @@ import type { ContentBlock } from '@deepseek-ai/dsh-llm'
 import type {} from '@deepseek-ai/dsh-subagent'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import type { ObjectJsonSchema } from '@deepseek-ai/dsh-tools'
-import { releaseChildBudget, type ChildBudget } from './guard.js'
+import { registerChild, releaseChildBudget, type ChildBudget } from './guard.js'
 import { normalizeSources, projectSearchResult } from './project.js'
 
 /** Provider that runs the search child. */
@@ -265,7 +265,7 @@ export function applySearchTool(ctx: Context, config: SearchConfig, budget: Chil
         outputSchema: CHILD_OUTPUT_SCHEMA,
         toolFilter: { allow: [...CHILD_TOOLS] },
       })
-      budget.sessions.add(run.id)
+      registerChild(budget, run.id, config.maxChildCalls)
       try {
         const result = await run.result
         return projectSearchResult(result, limit, config.maxSnippetChars)

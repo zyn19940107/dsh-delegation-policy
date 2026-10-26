@@ -126,6 +126,12 @@ question, or set `verifyRounds: 0` in the configuration to turn the pass off ent
 | `verifyProvider` | `spawn` | provider that runs the verifier |
 | `verifyTimeoutMs` | `600000` | budget for one verification pass |
 
+Every delegated child carries a retrieval budget: `web_search` and `web_fetch` calls are counted per
+child session, and the child is told to answer with what it has when the budget runs out. A child
+this plugin started carries the limit of its route (`maxChildCalls` for a search child,
+`maxThinkCalls` for a thinking or verifying child). Any other delegated child carries the larger of
+the two, so the policy is not bypassed by taking another route to the same place.
+
 The search backend is a separate concern: **this plugin never chooses one.** Point
 `web.searchProvider` at whatever the profile already pins.
 
@@ -170,9 +176,10 @@ wall-clock time.
 ## Layout
 
 ```
-src/index.ts     entry: registers both tools, the guard, the budgets, the prompt section
+src/index.ts     entry: registers both tools, the guard, the budget, the prompt section
 src/search.ts    search_web: spawn child, budgeted retrieval, projection
-src/think.ts     think_deep: fork child, tool restriction, projection
+src/think.ts     think_deep: fork child, tool restriction, verification loop, projection
+src/verify.ts    the verifier: adversarial review of a conclusion, and the revision it triggers
 src/project.ts   pure projections from a child's result to the parent's view
 src/guard.ts     the execution-point rules: the search guard, the retrieval budget
 verify/          specs and session-log readers

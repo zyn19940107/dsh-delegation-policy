@@ -15,29 +15,43 @@ import type { ToolExecution, ToolGuard } from '@deepseek-ai/dsh-tools'
 export const RETRIEVAL_TOOLS: readonly string[] = ['web_search', 'web_fetch']
 
 /**
- * Per-child retrieval accounting for one delegation kind.
+ * Per-child retrieval accounting.
  *
- * A child is identified by its session id. The id is known before the child can
- * call a tool: the child issues its first tool call only after a model
- * round-trip, while the spawning call resumes on the microtask queue.
+ * A child is charged by the session id it reports for itself, so the accounting
+ * never depends on the spawning side's idea of that id. A child this plugin
+ * started carries the limit of its route; any other delegated child carries the
+ * default limit, because a delegation policy that binds only its own routes is
+ * not a policy.
  */
 export interface ChildBudget {
-  /** Session ids of the children this budget covers. */
-  readonly sessions: Set<string>
   /** Retrieval calls already made, per child session. */
   readonly calls: Map<string, number>
-  /** Retrieval calls one child may make. */
-  limit: number
+  /** The limit that applies to a child, by its session id. */
+  readonly limits: Map<string, number>
+  /** The limit for a delegated child this budget did not start. */
+  defaultLimit: number
 }
 
 /**
  * Create an empty budget.
  *
- * @param limit - retrieval calls one child may make.
+ * @param defaultLimit - retrieval calls a delegated child this budget did not
+ *   start may make.
  * @returns the budget.
  */
-export function createChildBudget(limit: number): ChildBudget {
-  return { sessions: new Set(), calls: new Map(), limit }
+export function createChildBudget(defaultLimit: number): ChildBudget {
+  return { calls: new Map(), limits: new Map(), defaultLimit }
+}
+
+/**
+ * Give a child the limit of the route that started it.
+ *
+ * @param budget - the budget to register with.
+ * @param sessionId - the child's session id.
+ * @param limit - retrieval calls the child may make.
+ */
+export function registerChild(budget: ChildBudget, sessionId: string, limit: number): void {
+  budget.limits.set(sessionId, limit)
 }
 
 /**
@@ -54,12 +68,14 @@ export function checkChildBudget(
   const agent: Agent | undefined = execution.agent
   if (agent === undefined) return undefined
   const sessionId = agent.session.id
-  if (!budget.sessions.has(sessionId)) return undefined
+  const delegated = agent.session.header.origin === 'subagent'
+  const limit = budget.limits.get(sessionId) ?? (delegated ? budget.defaultLimit : undefined)
+  if (limit === undefined) return undefined
   if (!RETRIEVAL_TOOLS.includes(execution.name)) return undefined
   const used = (budget.calls.get(sessionId) ?? 0) + 1
   budget.calls.set(sessionId, used)
-  if (used <= budget.limit) return undefined
-  return `This delegation has spent its reading budget: ${budget.limit} retrieval calls. `
+  if (used <= limit) return undefined
+  return `This delegation has spent its reading budget: ${limit} retrieval calls. `
     + 'Answer now with what you already have — a source you did not read is better than a summary '
     + 'padded with material you did.'
 }
@@ -71,7 +87,7 @@ export function checkChildBudget(
  * @param sessionId - the child's session id.
  */
 export function releaseChildBudget(budget: ChildBudget, sessionId: string): void {
-  budget.sessions.delete(sessionId)
+  budget.limits.delete(sessionId)
   budget.calls.delete(sessionId)
 }
 
