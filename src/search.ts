@@ -274,8 +274,9 @@ export function applySearchTool(ctx: Context, config: SearchConfig, budget: Chil
   ctx.tools.register(defineTool({
     name: 'search_web',
     description: 'Search the web for current information. Use it for any fact that lives outside this '
-      + 'conversation; the user need not ask for it. The search runs in a delegated subagent, which reads '
-      + 'what it needs and returns a concise answer plus the sources it used.',
+      + 'conversation; the user need not ask for it, and once you have decided a fact is external, '
+      + 'dispatch the search now rather than reading around it first. The search runs in a delegated '
+      + 'subagent, which reads what it needs and returns a concise answer plus the sources it used.',
     parameters: {
       query: {
         type: 'string',

@@ -83,6 +83,15 @@ console.log('DELEGATION_GUIDANCE')
   // of the edit, and a model used it to reason inside a continuous edit.
   check('drops the over-broad exemption wording', !DELEGATION_GUIDANCE.includes('split up a continuous edit'))
   check('keeps the fragment exemption, scoped to the edit', DELEGATION_GUIDANCE.includes('break one continuous edit into fragments'))
+  // A model that had decided a fact was external answered "let me check the
+  // delegation policy" instead of dispatching the search, and the turn was
+  // interrupted there. The rules now say where they are, and that a decided
+  // fact goes to the search now.
+  check('says the rules are the whole of it', DELEGATION_GUIDANCE.includes('These are the rules for delegation'))
+  check('forbids going looking for the rules', DELEGATION_GUIDANCE.includes('Do not go looking for them elsewhere'))
+  check('names the plugin source as a place not to look', DELEGATION_GUIDANCE.includes("not in this plugin's source"))
+  check('says a decided external fact is dispatched now', DELEGATION_GUIDANCE.includes('dispatch the search now'))
+  check('scopes the read exemption to answering the question', DELEGATION_GUIDANCE.includes('answers the question on its own'))
 }
 
 console.log(failures === 0 ? '\nall checks passed' : `\n${failures} check(s) failed`)
