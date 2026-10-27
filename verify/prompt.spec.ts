@@ -9,7 +9,7 @@
 
 import { buildRetrievalPrompt } from '../src/search.js'
 import { buildThinkChildPrompt } from '../src/think.js'
-import { buildRefinePrompt } from '../src/verify.js'
+import { buildRefinePrompt, buildConflictSearchPrompt } from '../src/verify.js'
 import { DELEGATION_GUIDANCE } from '../src/index.js'
 
 let failures = 0
@@ -57,6 +57,20 @@ console.log('buildThinkChildPrompt')
   check('keeps the conversation instruction', prompt.includes('full context of this conversation'))
 }
 
+console.log('buildConflictSearchPrompt')
+{
+  const prompt = buildConflictSearchPrompt([
+    'the conclusion says the clip grips the cob at both ends; no source describes two arms',
+    'the claim that the spacing is fixed is unsupported',
+  ], 2)
+  check('carries the first problem', prompt.includes('grips the cob at both ends'))
+  check('carries the second problem', prompt.includes('the spacing is fixed is unsupported'))
+  check('asks for those points only', prompt.includes('Look up ONLY those parts'))
+  check('states the budget', prompt.includes('2 retrieval calls'))
+  check('accepts that the record settles nothing', prompt.includes('does not settle this'))
+  check('asks not to fill the gap with an inference', prompt.includes('not filled in with an inference'))
+}
+
 console.log('buildRefinePrompt')
 {
   const prompt = buildRefinePrompt(
@@ -65,11 +79,14 @@ console.log('buildRefinePrompt')
     ['the source does not say that'],
     [{ url: 'https://example.test/a', title: 'A' }],
     { answer: 'The source says otherwise.', sources: [{ url: 'https://example.test/b' }] },
+    { answer: 'The record does not settle this.', sources: [{ url: 'https://example.test/c' }] },
   )
   check('carries the objections', prompt.includes('the source does not say that'))
   check('carries the reviewer evidence', prompt.includes('https://example.test/a'))
   check('carries the retrieved material', prompt.includes('The source says otherwise.'))
   check('carries the retrieved source', prompt.includes('https://example.test/b'))
+  check('carries the conflict material', prompt.includes('The record does not settle this.'))
+  check('carries the conflict source', prompt.includes('https://example.test/c'))
   check('asks for a corrected conclusion', prompt.includes('corrected conclusion'))
 }
 

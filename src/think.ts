@@ -19,7 +19,7 @@ import type { ObjectJsonSchema } from '@deepseek-ai/dsh-tools'
 import { registerChild, releaseChildBudget, type ChildBudget } from './guard.js'
 import { projectThinkResult } from './project.js'
 import { buildRetrievalPrompt, delegateSearch, type SearchConfig } from './search.js'
-import { buildRefinePrompt, runVerifier } from './verify.js'
+import { buildConflictSearchPrompt, buildRefinePrompt, runVerifier } from './verify.js'
 
 /** Provider that runs the thinking child. */
 export const DEFAULT_THINK_PROVIDER = 'fork'
@@ -29,6 +29,14 @@ export const DEFAULT_MAX_THINK_CALLS = 5
 
 /** Default number of retrieval calls the retrieving child may make. */
 export const DEFAULT_RETRIEVE_MAX_CHILD_CALLS = 3
+
+/**
+ * Default retrieval calls a pass aimed at the contradictions may make.
+ *
+ * The pass looks up the specific points a reviewer could not support, so it needs
+ * far fewer calls than a first pass over the subject.
+ */
+export const DEFAULT_CONFLICT_SEARCH_CALLS = 2
 
 /**
  * Default budget for one delegated thought. The child inherits the parent's
@@ -127,6 +135,8 @@ interface ThinkDeepOutput {
   risks: string[]
   retrieved?: RetrievedKnowledge
   verification?: ThinkVerification
+  /** What a retrieval pass aimed at the contradictions found, when one ran. */
+  conflictRetrieved?: RetrievedKnowledge
   /** Self-revisions the parent has made this turn, when it has made any. */
   selfRevisions?: number
 }
@@ -141,6 +151,8 @@ export interface ThinkConfig {
   verifyTimeoutMs: number
   retrieveFirst: boolean
   retrieveMaxChildCalls: number
+  /** Retrieval calls a pass aimed at the contradictions may make. */
+  conflictSearchCalls: number
   search: SearchConfig
 }
 
@@ -185,6 +197,16 @@ export function formatThinkDeepOutput(value: ThinkDeepOutput): string {
     if (value.retrieved.sources.length > 0) {
       lines.push(`Sources:\n${
         value.retrieved.sources.map((source) => `- [${source.title ?? source.url}](${source.url})`).join('\n')
+      }`)
+    }
+    parts.push(lines.join('\n'))
+  }
+  if (value.conflictRetrieved !== undefined) {
+    const lines = ['Retrieved for the disputed points only:']
+    if (value.conflictRetrieved.answer.length > 0) lines.push(value.conflictRetrieved.answer)
+    if (value.conflictRetrieved.sources.length > 0) {
+      lines.push(`Sources:\n${
+        value.conflictRetrieved.sources.map((source) => `- [${source.title ?? source.url}](${source.url})`).join('\n')
       }`)
     }
     parts.push(lines.join('\n'))
@@ -409,11 +431,13 @@ export function applyThinkTool(
     },
     // A delegated thought is a foreground operation on the parent's behalf.
     // Its deadline covers the whole pipeline: the retrieving child, then one
-    // thinking child, then a verifier per round.
+    // thinking child, then a verifier per round, and a retrieval pass aimed at
+    // the contradictions whenever a verifier found any.
     isConcurrencySafe: () => false,
     timeoutMs: config.timeoutMs
       + config.verifyTimeoutMs * Math.max(1, config.verifyRounds)
-      + (config.retrieveFirst ? config.search.timeoutMs : 0),
+      + (config.retrieveFirst ? config.search.timeoutMs : 0)
+      + (config.conflictSearchCalls > 0 ? config.search.timeoutMs : 0),
     async execute(args, exec) {
       const parsed = parseThinkDeepArgs(args as ThinkDeepArgs)
       const parent = exec.agent
@@ -477,6 +501,7 @@ export function applyThinkTool(
       let risks: string[] = []
       let verification: ThinkVerification | undefined
 
+      let conflictRetrieved: RetrievedKnowledge | undefined
       for (let round = 1; round <= Math.max(1, maxRounds); round++) {
         const base = {
           parent,
@@ -538,7 +563,33 @@ export function applyThinkTool(
         }
         if (verdict.verdict !== 'conflict') break
         if (round >= maxRounds) break
-        prompt = buildRefinePrompt(parsed.task, conclusion, verdict.problems, verdict.evidence)
+        // The problems name the exact parts of the conclusion that failed, so
+        // the retrieval pass looks those up instead of re-reading the subject
+        // the first pass already covered.
+        const conflictSearch = await delegateSearch(
+          ctx,
+          config.search,
+          budget,
+          parent,
+          exec.signal,
+          buildConflictSearchPrompt(verdict.problems, config.conflictSearchCalls),
+          config.conflictSearchCalls,
+        )
+        conflictRetrieved = {
+          answer: conflictSearch.answer,
+          sources: conflictSearch.sources.map((source) => ({
+            url: source.url,
+            ...source.title === undefined ? {} : { title: source.title },
+          })),
+        }
+        prompt = buildRefinePrompt(
+          parsed.task,
+          conclusion,
+          verdict.problems,
+          verdict.evidence,
+          retrieved,
+          conflictRetrieved,
+        )
       }
 
       const selfRevisions = readOscillation?.(parent)
@@ -549,6 +600,7 @@ export function applyThinkTool(
         risks,
         ...retrieved !== undefined ? { retrieved } : {},
         ...verification !== undefined ? { verification } : {},
+        ...conflictRetrieved !== undefined ? { conflictRetrieved } : {},
         ...selfRevisions === undefined ? {} : { selfRevisions },
       }
     },

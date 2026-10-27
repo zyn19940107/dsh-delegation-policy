@@ -34,6 +34,7 @@ import {
   DEFAULT_SEARCH_TIMEOUT_MS,
 } from './search.js'
 import {
+  DEFAULT_CONFLICT_SEARCH_CALLS,
   DEFAULT_RETRIEVE_MAX_CHILD_CALLS,
 } from './think.js'
 import { DEFAULT_OSCILLATION_THRESHOLD } from './oscillation.js'
@@ -129,6 +130,8 @@ export interface Config {
   retrieveFirst: Volatile<boolean>
   /** Retrieval calls the retrieving child may make. */
   retrieveMaxChildCalls: Volatile<number>
+  /** Retrieval calls a pass aimed at the contradictions may make. */
+  conflictSearchCalls: Volatile<number>
   /** Self-revisions in one turn that count as going in circles. */
   oscillationThreshold: Volatile<number>
   /** What to do when a turn crosses that threshold. */
@@ -149,6 +152,7 @@ export const Config = z.object({
   verifyTimeoutMs: z.number().step(1).min(1).default(DEFAULT_VERIFY_TIMEOUT_MS).volatile(),
   retrieveFirst: z.boolean().default(true).volatile(),
   retrieveMaxChildCalls: z.number().step(1).min(1).default(DEFAULT_RETRIEVE_MAX_CHILD_CALLS).volatile(),
+  conflictSearchCalls: z.number().step(1).min(0).default(DEFAULT_CONFLICT_SEARCH_CALLS).volatile(),
   oscillationThreshold: z.number().step(1).min(0).default(DEFAULT_OSCILLATION_THRESHOLD).volatile(),
   oscillationAction: z.union(['observe', 'interrupt']).default('observe').volatile(),
 })
@@ -239,6 +243,7 @@ export function apply(ctx: Context, config: Config): void {
     verifyTimeoutMs: config.verifyTimeoutMs.get(),
     retrieveFirst: config.retrieveFirst.get(),
     retrieveMaxChildCalls: config.retrieveMaxChildCalls.get(),
+    conflictSearchCalls: config.conflictSearchCalls.get(),
     search: {
       provider: config.searchProvider.get(),
       maxSources: config.maxSources.get(),

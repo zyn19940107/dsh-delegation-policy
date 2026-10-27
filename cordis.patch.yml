@@ -27,3 +27,4 @@
         retrieveMaxChildCalls: 3
         oscillationThreshold: 12
         oscillationAction: observe
+        conflictSearchCalls: 2

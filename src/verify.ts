@@ -134,6 +134,42 @@ export function buildVerifierPrompt(
 }
 
 /**
+ * Build the instruction for a retrieval pass aimed at the contradictions.
+ *
+ * The problems a verifier reports name the exact parts of a conclusion it
+ * cannot support. Looking the subject up again would mostly re-read what the
+ * first pass already read; looking up the contradictions is what can change the
+ * answer. The child is told that "the record does not settle this" is a valid
+ * result, because a contradiction the sources cannot resolve has to be
+ * reported rather than argued away.
+ *
+ * @param problems - the verifier's objections.
+ * @param maxCalls - the retrieval calls the child has.
+ * @returns the child's instruction.
+ */
+export function buildConflictSearchPrompt(
+  problems: readonly string[],
+  maxCalls: number,
+): string {
+  return [
+    'A reviewer checked a conclusion and found specific parts of it that the sources do not support. '
+    + 'Look up ONLY those parts. Do not research the subject in general: the rest of the conclusion was '
+    + 'already checked, and re-reading it wastes the budget.',
+    '',
+    'The points to check:',
+    ...problems.map((problem) => `- ${problem}`),
+    '',
+    `You have a reading budget of ${maxCalls} retrieval calls. Spend them on the points above, and `
+    + 'search for what the sources actually say about each one rather than for a phrase that contains '
+    + 'its words.',
+    'For each point, report what the sources say, and say plainly when they do not settle it. "The '
+    + 'record does not settle this" is a valid and useful answer: a point that no source settles has to '
+    + 'be reported as unresolved, not filled in with an inference.',
+    'Then deliver your result with the structured_output tool.',
+  ].join('\n')
+}
+
+/**
  * Build the instruction that asks for a corrected conclusion.
  *
  * @param task - the question being answered.
@@ -141,6 +177,7 @@ export function buildVerifierPrompt(
  * @param problems - the verifier's objections.
  * @param evidence - the sources the verifier used.
  * @param retrieved - the external knowledge the pipeline gathered first.
+ * @param conflictRetrieved - what a retrieval pass aimed at the contradictions found.
  * @returns the refinement instruction.
  */
 export function buildRefinePrompt(
@@ -149,6 +186,7 @@ export function buildRefinePrompt(
   problems: readonly string[],
   evidence: readonly { url: string, title?: string, snippet?: string }[],
   retrieved?: { answer: string, sources: { url: string, title?: string }[] },
+  conflictRetrieved?: { answer: string, sources: { url: string, title?: string }[] },
 ): string {
   const lines: string[] = [
     'A reviewer checked the conclusion below against its sources and found parts it cannot support. '
@@ -177,6 +215,20 @@ export function buildRefinePrompt(
         : [],
       '---',
       'Treat it as retrieved material, not as established fact.',
+    )
+  }
+  if (conflictRetrieved !== undefined) {
+    lines.push(
+      '',
+      'A retrieval pass aimed at the problems above found:',
+      '---',
+      conflictRetrieved.answer,
+      ...conflictRetrieved.sources.length > 0
+        ? [`Sources: ${conflictRetrieved.sources.map((source) => (source.title === undefined ? source.url : `[${source.title}](${source.url})`)).join(', ')}`]
+        : [],
+      '---',
+      'This was fetched for the disputed points only. Treat it as retrieved material, not as established '
+      + 'fact, and say so in the conclusion when it does not settle a problem.',
     )
   }
   lines.push(

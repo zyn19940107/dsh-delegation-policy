@@ -241,6 +241,7 @@ export function buildRetrievalPrompt(task: string, focus: string | undefined, ma
  * @param parent - the agent the search runs on behalf of.
  * @param signal - the caller's signal.
  * @param prompt - the child's instruction.
+ * @param maxCalls - the retrieval calls the child has; defaults to the route's limit.
  * @returns the parent's view of what the child found.
  */
 export async function delegateSearch(
@@ -250,6 +251,7 @@ export async function delegateSearch(
   parent: Agent,
   signal: AbortSignal,
   prompt: string,
+  maxCalls: number = config.maxChildCalls,
 ): Promise<SearchProjection> {
   const run = await ctx.subagents.start(config.provider, {
     parent,
@@ -258,7 +260,7 @@ export async function delegateSearch(
     outputSchema: CHILD_OUTPUT_SCHEMA,
     toolFilter: { allow: [...CHILD_TOOLS] },
   })
-  registerChild(budget, run.id, config.maxChildCalls)
+  registerChild(budget, run.id, maxCalls)
   try {
     const result = await run.result
     return projectSearchResult(result, config.maxSources, config.maxSnippetChars)
