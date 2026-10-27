@@ -11,6 +11,7 @@
  */
 
 import type { Context } from '@deepseek-ai/cordis'
+import type { Agent } from '@deepseek-ai/dsh-agent'
 import type { ContentBlock } from '@deepseek-ai/dsh-llm'
 import type {} from '@deepseek-ai/dsh-subagent'
 import { defineTool } from '@deepseek-ai/dsh-tools'
@@ -126,6 +127,8 @@ interface ThinkDeepOutput {
   risks: string[]
   retrieved?: RetrievedKnowledge
   verification?: ThinkVerification
+  /** Self-revisions the parent has made this turn, when it has made any. */
+  selfRevisions?: number
 }
 
 /** Thinking route configuration. */
@@ -201,6 +204,10 @@ export function formatThinkDeepOutput(value: ThinkDeepOutput): string {
       }`)
     }
     parts.push(lines.join('\n'))
+  }
+  if (value.selfRevisions !== undefined) {
+    parts.push(`Note: this turn has revised itself ${value.selfRevisions} times. `
+      + 'If the point keeps changing, settle it in one delegated judgement instead of re-deriving it here.')
   }
   return parts.join('\n\n')
 }
@@ -308,7 +315,12 @@ function denyFromRestrictionFailure(
  * @param config - the resolved thinking configuration.
  * @param budget - the budget that covers this route's children.
  */
-export function applyThinkTool(ctx: Context, config: ThinkConfig, budget: ChildBudget): void {
+export function applyThinkTool(
+  ctx: Context,
+  config: ThinkConfig,
+  budget: ChildBudget,
+  readOscillation?: (agent: Agent) => number | undefined,
+): void {
   // The names this child accepts, learned from a restriction failure. The
   // child's scope cannot be derived before the spawn, and the failure names
   // every tool the child accepts.
@@ -529,6 +541,7 @@ export function applyThinkTool(ctx: Context, config: ThinkConfig, budget: ChildB
         prompt = buildRefinePrompt(parsed.task, conclusion, verdict.problems, verdict.evidence)
       }
 
+      const selfRevisions = readOscillation?.(parent)
       return {
         conclusion,
         keyPoints,
@@ -536,6 +549,7 @@ export function applyThinkTool(ctx: Context, config: ThinkConfig, budget: ChildB
         risks,
         ...retrieved !== undefined ? { retrieved } : {},
         ...verification !== undefined ? { verification } : {},
+        ...selfRevisions === undefined ? {} : { selfRevisions },
       }
     },
     presentCall: (args) => {

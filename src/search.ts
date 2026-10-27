@@ -90,6 +90,8 @@ interface SearchWebOutput {
   answer: string
   sources: SearchWebSource[]
   truncated: boolean
+  /** Self-revisions the parent has made this turn, when it has made any. */
+  selfRevisions?: number
 }
 
 /** Search route configuration. */
@@ -146,6 +148,10 @@ export function formatSearchWebOutput(value: SearchWebOutput): string {
     parts.push(`Sources:\n${lines.join('\n')}`)
   }
   parts.push('Cite the relevant URLs above as markdown links in your answer.')
+  if (value.selfRevisions !== undefined) {
+    parts.push(`Note: this turn has revised itself ${value.selfRevisions} times. `
+      + 'If the point keeps changing, settle it in one delegated judgement instead of re-deriving it here.')
+  }
   return parts.join('\n\n')
 }
 
@@ -270,7 +276,12 @@ export async function delegateSearch(
  * @param budget - the budget that covers this route's children.
  * @returns the budget, so the caller can release children against it.
  */
-export function applySearchTool(ctx: Context, config: SearchConfig, budget: ChildBudget): void {
+export function applySearchTool(
+  ctx: Context,
+  config: SearchConfig,
+  budget: ChildBudget,
+  readOscillation?: (agent: Agent) => number | undefined,
+): void {
   ctx.tools.register(defineTool({
     name: 'search_web',
     description: 'Search the web for current information. Use it for any fact that lives outside this '
@@ -335,10 +346,12 @@ export function applySearchTool(ctx: Context, config: SearchConfig, budget: Chil
         exec.signal,
         buildSearchChildPrompt(parsed.query, parsed.focus, config.maxChildCalls),
       )
+      const selfRevisions = readOscillation?.(parent)
       return {
         answer: projection.answer,
         sources: projection.sources,
         truncated: projection.truncated,
+        ...selfRevisions === undefined ? {} : { selfRevisions },
       }
     },
     presentCall: (args) => {

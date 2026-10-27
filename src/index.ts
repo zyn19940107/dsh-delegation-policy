@@ -20,9 +20,11 @@
  */
 
 import type { Context, Volatile } from '@deepseek-ai/cordis'
+import type { Agent } from '@deepseek-ai/dsh-agent'
 import z from '@deepseek-ai/schemastery'
 import type { PreToolDecision, ToolExecution } from '@deepseek-ai/dsh-tools'
 import { checkChildBudget, createChildBudget, createWebGuard } from './guard.js'
+import { createOscillationGuard, OscillationTracker } from './oscillation.js'
 import {
   applySearchTool,
   DEFAULT_MAX_CHILD_CALLS,
@@ -34,6 +36,7 @@ import {
 import {
   DEFAULT_RETRIEVE_MAX_CHILD_CALLS,
 } from './think.js'
+import { DEFAULT_OSCILLATION_THRESHOLD } from './oscillation.js'
 import {
   applyThinkTool,
   DEFAULT_MAX_THINK_CALLS,
@@ -126,6 +129,10 @@ export interface Config {
   retrieveFirst: Volatile<boolean>
   /** Retrieval calls the retrieving child may make. */
   retrieveMaxChildCalls: Volatile<number>
+  /** Self-revisions in one turn that count as going in circles. */
+  oscillationThreshold: Volatile<number>
+  /** What to do when a turn crosses that threshold. */
+  oscillationAction: Volatile<'observe' | 'interrupt'>
 }
 
 export const Config = z.object({
@@ -142,6 +149,8 @@ export const Config = z.object({
   verifyTimeoutMs: z.number().step(1).min(1).default(DEFAULT_VERIFY_TIMEOUT_MS).volatile(),
   retrieveFirst: z.boolean().default(true).volatile(),
   retrieveMaxChildCalls: z.number().step(1).min(1).default(DEFAULT_RETRIEVE_MAX_CHILD_CALLS).volatile(),
+  oscillationThreshold: z.number().step(1).min(0).default(DEFAULT_OSCILLATION_THRESHOLD).volatile(),
+  oscillationAction: z.union(['observe', 'interrupt']).default('observe').volatile(),
 })
 
 /**
@@ -169,6 +178,41 @@ export function apply(ctx: Context, config: Config): void {
 
   ctx.tools.guard(createWebGuard())
 
+  // Watch the stream for a model that keeps revising the same point. The count
+  // is reported and never acted on: a turn is not interrupted on the strength
+  // of a marker count, because the same markers appear in honest
+  // self-correction.
+  const oscillation = new OscillationTracker()
+  const threshold = config.oscillationThreshold.get()
+  // The turn a stream belongs to is announced by its start frame.
+  const streamTurn = new Map<string, number>()
+  ctx.on('agent/assistant-stream', (payload) => {
+    const frame = payload.frame
+    const sessionId = payload.agent.session.id
+    if (frame.type === 'start') {
+      streamTurn.set(sessionId, frame.turn)
+      return
+    }
+    if (frame.type !== 'chunk') return
+    const chunk = frame.chunk
+    if (chunk.type !== 'text-delta' && chunk.type !== 'reasoning-delta') return
+    const turn = streamTurn.get(sessionId) ?? 0
+    const reading = oscillation.observe(sessionId, turn, chunk.text)
+    if (reading.count < threshold) return
+    if (!oscillation.claimReport(sessionId, turn)) return
+    ctx.logger.warn(
+      `delegation-policy: ${reading.count} self-revisions in this turn `
+      + `(session ${sessionId}) — the reasoning may be going in circles`,
+    )
+  })
+
+  const readOscillation = (agent: Agent): number | undefined => {
+    const reading = oscillation.reading(agent.session.id, threshold)
+    return reading.count > 0 ? reading.count : undefined
+  }
+
+  ctx.tools.guard(createOscillationGuard(oscillation, threshold, config.oscillationAction.get()))
+
   ctx.on('tools/pre-execute', async (
     exec: ToolExecution,
     next,
@@ -184,7 +228,7 @@ export function apply(ctx: Context, config: Config): void {
     maxSnippetChars: config.maxSnippetChars.get(),
     maxChildCalls: config.maxChildCalls.get(),
     timeoutMs: config.searchTimeoutMs.get(),
-  }, budget)
+  }, budget, readOscillation)
 
   applyThinkTool(ctx, {
     provider: config.thinkProvider.get(),
@@ -202,5 +246,5 @@ export function apply(ctx: Context, config: Config): void {
       maxChildCalls: config.maxChildCalls.get(),
       timeoutMs: config.searchTimeoutMs.get(),
     },
-  }, budget)
+  }, budget, readOscillation)
 }
