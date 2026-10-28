@@ -205,8 +205,8 @@ export function apply(ctx: Context, config: Config): void {
     )
   })
 
-  const readOscillation = (agent: Agent): number | undefined => {
-    const reading = oscillation.reading(agent.session.id, threshold)
+  const readOscillation = (sessionId: string): number | undefined => {
+    const reading = oscillation.reading(sessionId, threshold)
     return reading.count > 0 ? reading.count : undefined
   }
 

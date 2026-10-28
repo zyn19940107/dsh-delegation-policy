@@ -248,7 +248,7 @@ export function applySearchTool(
   ctx: Context,
   config: SearchConfig,
   budget: ChildBudget,
-  readOscillation?: (agent: Agent) => number | undefined,
+  readOscillation?: (sessionId: string) => number | undefined,
 ): void {
   ctx.tools.register(defineTool({
     name: 'search_web',
@@ -314,7 +314,7 @@ export function applySearchTool(
         exec.signal,
         buildSearchChildPrompt(parsed.query, parsed.focus, config.maxChildCalls),
       )
-      const selfRevisions = readOscillation?.(parent)
+      const selfRevisions = readOscillation?.(parent.session.id)
       return {
         answer: projection.answer,
         sources: projection.sources,
