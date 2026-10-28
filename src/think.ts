@@ -18,7 +18,7 @@ import { defineTool } from '@deepseek-ai/dsh-tools'
 import type { ObjectJsonSchema } from '@deepseek-ai/dsh-tools'
 import { registerChild, releaseChildBudget, type ChildBudget } from './guard.js'
 import { projectThinkResult } from './project.js'
-import { buildRetrievalPrompt, delegateSearch, type SearchConfig } from './search.js'
+import { delegateSearch, type SearchConfig } from './search.js'
 import { buildConflictSearchPrompt, buildRefinePrompt, runVerifier } from './verify.js'
 
 /** Provider that runs the thinking child. */
@@ -133,7 +133,6 @@ interface ThinkDeepOutput {
   keyPoints: string[]
   assumptions: string[]
   risks: string[]
-  retrieved?: RetrievedKnowledge
   verification?: ThinkVerification
   /** What a retrieval pass aimed at the contradictions found, when one ran. */
   conflictRetrieved?: RetrievedKnowledge
@@ -149,8 +148,6 @@ export interface ThinkConfig {
   verifyRounds: number
   verifyProvider: string
   verifyTimeoutMs: number
-  retrieveFirst: boolean
-  retrieveMaxChildCalls: number
   /** Retrieval calls a pass aimed at the contradictions may make. */
   conflictSearchCalls: number
   search: SearchConfig
@@ -190,16 +187,6 @@ export function formatThinkDeepOutput(value: ThinkDeepOutput): string {
   }
   if (value.risks.length > 0) {
     parts.push(`Risks:\n${value.risks.map((item) => `- ${item}`).join('\n')}`)
-  }
-  if (value.retrieved !== undefined) {
-    const lines = ['Retrieved before the reasoning started:']
-    if (value.retrieved.answer.length > 0) lines.push(value.retrieved.answer)
-    if (value.retrieved.sources.length > 0) {
-      lines.push(`Sources:\n${
-        value.retrieved.sources.map((source) => `- [${source.title ?? source.url}](${source.url})`).join('\n')
-      }`)
-    }
-    parts.push(lines.join('\n'))
   }
   if (value.conflictRetrieved !== undefined) {
     const lines = ['Retrieved for the disputed points only:']
@@ -252,7 +239,6 @@ export function buildThinkChildPrompt(
   task: string,
   focus: string | undefined,
   maxCalls: number,
-  retrieved?: RetrievedKnowledge,
 ): string {
   const parts: string[] = [`Think this through thoroughly: ${task}`]
   if (focus !== undefined && focus.trim().length > 0) {
@@ -265,20 +251,6 @@ export function buildThinkChildPrompt(
     `You have a reading budget of ${maxCalls} retrieval calls if you need to check something external. `
     + 'Spend them only on what the conversation does not already settle.',
   )
-  if (retrieved !== undefined) {
-    parts.push(
-      'External knowledge was retrieved for this question before you started, by a separate search:',
-      '---',
-      retrieved.answer,
-      ...retrieved.sources.length > 0
-        ? [`Sources: ${retrieved.sources.map((source) => (source.title === undefined ? source.url : `[${source.title}](${source.url})`)).join(', ')}`]
-        : [],
-      '---',
-      'Treat it as retrieved material, not as established fact: check it against this conversation and '
-      + 'against your own reasoning, and say where it does not fit. If it is empty or irrelevant, say '
-      + 'so and proceed on what this conversation establishes.',
-    )
-  }
   parts.push(
     'Then deliver your result with the structured_output tool:',
     '- conclusion: the recommended answer, stated directly in a few sentences. Give a recommendation, not '
@@ -384,7 +356,7 @@ export function applyThinkTool(
           keyPoints: { type: 'array', required: true, items: { type: 'string' } },
           assumptions: { type: 'array', required: true, items: { type: 'string' } },
           risks: { type: 'array', required: true, items: { type: 'string' } },
-          retrieved: {
+          conflictRetrieved: {
             type: 'object',
             additionalProperties: false,
             properties: {
@@ -436,7 +408,6 @@ export function applyThinkTool(
     isConcurrencySafe: () => false,
     timeoutMs: config.timeoutMs
       + config.verifyTimeoutMs * Math.max(1, config.verifyRounds)
-      + (config.retrieveFirst ? config.search.timeoutMs : 0)
       + (config.conflictSearchCalls > 0 ? config.search.timeoutMs : 0),
     async execute(args, exec) {
       const parsed = parseThinkDeepArgs(args as ThinkDeepArgs)
@@ -470,31 +441,13 @@ export function applyThinkTool(
         ])]
       const maxRounds = parsed.verify === false ? 0 : config.verifyRounds
 
-      // The pipeline's first step is retrieval. A separate child gathers the
-      // external knowledge the question depends on, before any reasoning
-      // starts: whether to look something up is not left to the model, which
-      // cannot tell what it does not know. The material goes into the thinking
-      // child's prompt and never into the parent's context.
-      let retrieved: RetrievedKnowledge | undefined
-      if (config.retrieveFirst) {
-        const projection = await delegateSearch(
-          ctx,
-          { ...config.search, maxChildCalls: config.retrieveMaxChildCalls },
-          budget,
-          parent,
-          exec.signal,
-          buildRetrievalPrompt(parsed.task, parsed.focus, config.retrieveMaxChildCalls),
-        )
-        retrieved = {
-          answer: projection.answer,
-          sources: projection.sources.map((source) => ({
-            url: source.url,
-            ...source.title === undefined ? {} : { title: source.title },
-          })),
-        }
-      }
-
-      let prompt = buildThinkChildPrompt(parsed.task, parsed.focus, config.maxChildCalls, retrieved)
+      // No retrieval happens here. The thinking child is a fork: it inherits
+      // this conversation, including anything the parent already searched for,
+      // so retrieving again would read the same material twice and put a second
+      // corpus in the prompt that the parent never asked for. The parent's
+      // `search_web` is the way external knowledge enters; the retrieval that
+      // belongs to this pipeline is the one aimed at a verifier's objections.
+      let prompt = buildThinkChildPrompt(parsed.task, parsed.focus, config.maxChildCalls)
       let conclusion = ''
       let keyPoints: string[] = []
       let assumptions: string[] = []
@@ -587,7 +540,6 @@ export function applyThinkTool(
           conclusion,
           verdict.problems,
           verdict.evidence,
-          retrieved,
           conflictRetrieved,
         )
       }
@@ -598,7 +550,6 @@ export function applyThinkTool(
         keyPoints,
         assumptions,
         risks,
-        ...retrieved !== undefined ? { retrieved } : {},
         ...verification !== undefined ? { verification } : {},
         ...conflictRetrieved !== undefined ? { conflictRetrieved } : {},
         ...selfRevisions === undefined ? {} : { selfRevisions },

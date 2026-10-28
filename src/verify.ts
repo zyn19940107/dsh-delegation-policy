@@ -185,7 +185,6 @@ export function buildRefinePrompt(
   conclusion: string,
   problems: readonly string[],
   evidence: readonly { url: string, title?: string, snippet?: string }[],
-  retrieved?: { answer: string, sources: { url: string, title?: string }[] },
   conflictRetrieved?: { answer: string, sources: { url: string, title?: string }[] },
 ): string {
   const lines: string[] = [
@@ -204,19 +203,6 @@ export function buildRefinePrompt(
     'What the sources actually say:',
     ...evidence.map((item) => `- [${item.title ?? item.url}](${item.url})${item.snippet === undefined ? '' : ` — ${item.snippet}`}`),
   ]
-  if (retrieved !== undefined) {
-    lines.push(
-      '',
-      'External knowledge retrieved before the first pass started:',
-      '---',
-      retrieved.answer,
-      ...retrieved.sources.length > 0
-        ? [`Sources: ${retrieved.sources.map((source) => (source.title === undefined ? source.url : `[${source.title}](${source.url})`)).join(', ')}`]
-        : [],
-      '---',
-      'Treat it as retrieved material, not as established fact.',
-    )
-  }
   if (conflictRetrieved !== undefined) {
     lines.push(
       '',

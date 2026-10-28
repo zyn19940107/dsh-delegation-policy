@@ -199,40 +199,6 @@ export function buildSearchChildPrompt(query: string, focus: string | undefined,
 }
 
 /**
- * Build the retrieval child's instruction.
- *
- * The retrieval child gathers the external knowledge that bears on a question;
- * it does not answer it. The reasoning happens later, in a different child, over
- * this material — so the child is told to report material rather than a
- * conclusion.
- *
- * @param task - the question the knowledge is gathered for.
- * @param focus - what the knowledge must cover, when the caller narrowed it.
- * @param maxCalls - the retrieval calls the child has.
- * @returns the child's instruction.
- */
-export function buildRetrievalPrompt(task: string, focus: string | undefined, maxCalls: number): string {
-  const parts: string[] = [`Find the external knowledge that bears on this question: ${task}`]
-  if (focus !== undefined && focus.trim().length > 0) {
-    parts.push(`Only gather what matters for this question: ${focus}`)
-  }
-  parts.push(
-    'Use the web_search tool to find candidate sources. When a snippet is not enough, use web_fetch to '
-    + 'read the most promising page.',
-    `You have a reading budget of ${maxCalls} retrieval calls. Spend it on the claims the question `
-    + 'actually depends on, not on the topic in general.',
-    'Then deliver your result with the structured_output tool:',
-    '- answer: a dense summary of the external knowledge that bears on the question — the facts, the '
-    + 'versions, the numbers, the dates, and where the sources disagree. At most eight sentences. This '
-    + 'is material for someone else to reason over, not a recommendation and not a conclusion.',
-    '- sources: the two to five sources you actually used, each with its url, its title, and a '
-    + 'one-sentence snippet under 200 characters.',
-    'Do not paste long excerpts. Do not list a source you did not use.',
-  )
-  return parts.join('\n\n')
-}
-
-/**
  * Run one delegated search child and project its result.
  *
  * @param ctx - the plugin context supplying the registries.

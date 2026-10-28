@@ -7,7 +7,6 @@
  * to treat it as material rather than as fact.
  */
 
-import { buildRetrievalPrompt } from '../src/search.js'
 import { buildThinkChildPrompt } from '../src/think.js'
 import { buildRefinePrompt, buildConflictSearchPrompt } from '../src/verify.js'
 import { DELEGATION_GUIDANCE } from '../src/index.js'
@@ -30,31 +29,17 @@ function check(name: string, condition: boolean, detail = ''): void {
   console.log(`  FAIL ${name}${detail === '' ? '' : ` — ${detail}`}`)
 }
 
-console.log('buildRetrievalPrompt')
-{
-  const prompt = buildRetrievalPrompt('does the widget support mode X', 'the version that added it', 3)
-  check('carries the question', prompt.includes('does the widget support mode X'))
-  check('carries the focus', prompt.includes('the version that added it'))
-  check('states the reading budget', prompt.includes('3 retrieval calls'))
-  check('asks for material, not a conclusion', prompt.includes('not a recommendation and not a conclusion'))
-  check('names the search tool', prompt.includes('web_search'))
-}
-
 console.log('buildThinkChildPrompt')
 {
   const plain = buildThinkChildPrompt('what should we do', undefined, 5)
-  check('has no retrieval section without material', !plain.includes('External knowledge'))
+  check('has no retrieval section', !plain.includes('External knowledge'))
   check('still asks for the structured result', plain.includes('structured_output'))
 }
 {
-  const prompt = buildThinkChildPrompt('what should we do', 'the migration order', 5, {
-    answer: 'The widget shipped mode X in 4.2.',
-    sources: [{ url: 'https://example.test/rel', title: 'Release notes' }],
-  })
-  check('carries the retrieved material', prompt.includes('The widget shipped mode X in 4.2.'))
-  check('carries the source', prompt.includes('https://example.test/rel'))
-  check('says the material is not fact', prompt.includes('not as established fact'))
+  const prompt = buildThinkChildPrompt('what should we do', 'the migration order', 5)
   check('keeps the conversation instruction', prompt.includes('full context of this conversation'))
+  check('carries no retrieval material of its own', !prompt.includes('External knowledge'))
+  check('states the reading budget', prompt.includes('5 retrieval calls'))
 }
 
 console.log('buildConflictSearchPrompt')
@@ -78,15 +63,13 @@ console.log('buildRefinePrompt')
     'the old conclusion',
     ['the source does not say that'],
     [{ url: 'https://example.test/a', title: 'A' }],
-    { answer: 'The source says otherwise.', sources: [{ url: 'https://example.test/b' }] },
     { answer: 'The record does not settle this.', sources: [{ url: 'https://example.test/c' }] },
   )
   check('carries the objections', prompt.includes('the source does not say that'))
   check('carries the reviewer evidence', prompt.includes('https://example.test/a'))
-  check('carries the retrieved material', prompt.includes('The source says otherwise.'))
-  check('carries the retrieved source', prompt.includes('https://example.test/b'))
   check('carries the conflict material', prompt.includes('The record does not settle this.'))
   check('carries the conflict source', prompt.includes('https://example.test/c'))
+  check('says the material is not fact', prompt.includes('not as established fact'))
   check('asks for a corrected conclusion', prompt.includes('corrected conclusion'))
 }
 

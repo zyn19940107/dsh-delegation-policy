@@ -35,7 +35,6 @@ import {
 } from './search.js'
 import {
   DEFAULT_CONFLICT_SEARCH_CALLS,
-  DEFAULT_RETRIEVE_MAX_CHILD_CALLS,
 } from './think.js'
 import { DEFAULT_OSCILLATION_THRESHOLD } from './oscillation.js'
 import {
@@ -128,8 +127,6 @@ export interface Config {
   verifyTimeoutMs: Volatile<number>
   /** Whether a delegated thought retrieves before it reasons. */
   retrieveFirst: Volatile<boolean>
-  /** Retrieval calls the retrieving child may make. */
-  retrieveMaxChildCalls: Volatile<number>
   /** Retrieval calls a pass aimed at the contradictions may make. */
   conflictSearchCalls: Volatile<number>
   /** Self-revisions in one turn that count as going in circles. */
@@ -150,8 +147,6 @@ export const Config = z.object({
   verifyRounds: z.number().step(1).min(0).default(DEFAULT_VERIFY_ROUNDS).volatile(),
   verifyProvider: z.string().default(DEFAULT_VERIFY_PROVIDER).volatile(),
   verifyTimeoutMs: z.number().step(1).min(1).default(DEFAULT_VERIFY_TIMEOUT_MS).volatile(),
-  retrieveFirst: z.boolean().default(true).volatile(),
-  retrieveMaxChildCalls: z.number().step(1).min(1).default(DEFAULT_RETRIEVE_MAX_CHILD_CALLS).volatile(),
   conflictSearchCalls: z.number().step(1).min(0).default(DEFAULT_CONFLICT_SEARCH_CALLS).volatile(),
   oscillationThreshold: z.number().step(1).min(0).default(DEFAULT_OSCILLATION_THRESHOLD).volatile(),
   oscillationAction: z.union(['observe', 'interrupt']).default('observe').volatile(),
@@ -241,8 +236,6 @@ export function apply(ctx: Context, config: Config): void {
     verifyRounds: config.verifyRounds.get(),
     verifyProvider: config.verifyProvider.get(),
     verifyTimeoutMs: config.verifyTimeoutMs.get(),
-    retrieveFirst: config.retrieveFirst.get(),
-    retrieveMaxChildCalls: config.retrieveMaxChildCalls.get(),
     conflictSearchCalls: config.conflictSearchCalls.get(),
     search: {
       provider: config.searchProvider.get(),

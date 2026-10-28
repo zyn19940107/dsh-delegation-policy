@@ -87,29 +87,29 @@ whole implementation task as one continuous edit and reasoned through the geomet
 its model of the part three times before the user pointed out that the direction was wrong. The
 guidance now says so explicitly, and a spec keeps the wording from being narrowed back.
 
-## The pipeline: retrieve, reason, verify
+## The pipeline: reason, verify, look up the contradiction
 
 ```
 think_deep(task, focus, verify?)
-  └─ spawn#0  retrieves the external knowledge the question depends on
-       └─ fork#1  reasons over this conversation AND that material → conclusion
-            └─ spawn#1  tries to refute the conclusion      → confirmed | conflict
-                 └─ on conflict and a round left: fork#2 revises the conclusion
-                      └─ spawn#2 reviews the revision
-  returns the conclusion, what was retrieved, and the verification record
+  └─ fork#1  reasons over this conversation → conclusion
+       └─ spawn#1  tries to refute the conclusion      → confirmed | conflict
+            └─ on conflict: spawn#2 looks up ONLY the disputed points
+                 └─ fork#3 revises the conclusion with what that search found
+                      └─ spawn#3 reviews the revision
+  returns the conclusion, what the disputed-points search found, and the verification record
 ```
 
-**Retrieval is the first step, not a judgement.** Whether to look something up is exactly the
-decision a model cannot make well: it cannot tell what it does not know, and the training prior
-makes answering from memory the default continuation. So the pipeline retrieves first, in its own
-child, and the reasoning starts from material rather than from memory. The material goes into the
-thinking child's prompt — the parent's context never sees the corpus — and the child is told to
-treat it as retrieved material rather than as fact.
+**The pipeline does not retrieve the subject.** The thinking child is a fork: it inherits this
+conversation, including anything the parent already searched for, so retrieving again would read the
+same material twice and put a second corpus in the prompt that the parent never asked for. External
+knowledge enters through the parent's `search_web`, which is the one route to the web from this
+conversation.
 
-The retrieving child gathers knowledge, not a conclusion: the reasoning happens in a different
-child, over what it found.
-
-Set `retrieveFirst: false` to turn the step off.
+The one retrieval inside the pipeline is aimed at a verifier's objections, not at the subject: the
+problems a verifier reports name the exact parts of a conclusion it cannot support, and looking those
+up is what can change the answer. The child is told that "the record does not settle this" is a
+valid result, because a contradiction the sources cannot resolve has to be reported rather than
+argued away.
 
 ## Verification: a second child that refutes the conclusion
 
