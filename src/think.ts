@@ -136,10 +136,6 @@ interface ThinkDeepOutput {
   verification?: ThinkVerification
   /** What a retrieval pass aimed at the contradictions found, when one ran. */
   conflictRetrieved?: RetrievedKnowledge
-  /** Self-revisions the parent has made this turn, when it has made any. */
-  selfRevisions?: number
-  /** Self-revisions the thinking child made while reaching the conclusion. */
-  thinkingRevisions?: number
 }
 
 /** Thinking route configuration. */
@@ -215,14 +211,6 @@ export function formatThinkDeepOutput(value: ThinkDeepOutput): string {
       }`)
     }
     parts.push(lines.join('\n'))
-  }
-  if (value.thinkingRevisions !== undefined) {
-    parts.push(`The delegated reasoning revised itself ${value.thinkingRevisions} times while reaching `
-      + 'this conclusion. Treat it as settled by that reasoning, not as a first draft.')
-  }
-  if (value.selfRevisions !== undefined) {
-    parts.push(`Note: this turn has revised itself ${value.selfRevisions} times. `
-      + 'If the point keeps changing, settle it in one delegated judgement instead of re-deriving it here.')
   }
   return parts.join('\n\n')
 }
@@ -319,7 +307,6 @@ export function applyThinkTool(
   ctx: Context,
   config: ThinkConfig,
   budget: ChildBudget,
-  readOscillation?: (sessionId: string) => number | undefined,
 ): void {
   // The names this child accepts, learned from a restriction failure. The
   // child's scope cannot be derived before the spawn, and the failure names
@@ -461,7 +448,6 @@ export function applyThinkTool(
       let verification: ThinkVerification | undefined
 
       let conflictRetrieved: RetrievedKnowledge | undefined
-      let thinkingRevisions: number | undefined
       for (let round = 1; round <= Math.max(1, maxRounds); round++) {
         const base = {
           parent,
@@ -499,8 +485,6 @@ export function applyThinkTool(
         // The thinking child's own self-revisions: it is a separate agent with
         // its own stream, and how many times it argued with itself is a fact
         // about the reasoning that the conclusion came out of.
-        const childRevisions = readOscillation?.(run.id)
-        if (childRevisions !== undefined) thinkingRevisions = childRevisions
         conclusion = projected.conclusion
         keyPoints = projected.keyPoints
         assumptions = projected.assumptions
@@ -556,7 +540,6 @@ export function applyThinkTool(
         )
       }
 
-      const selfRevisions = readOscillation?.(parent.session.id)
       return {
         conclusion,
         keyPoints,
@@ -564,8 +547,6 @@ export function applyThinkTool(
         risks,
         ...verification !== undefined ? { verification } : {},
         ...conflictRetrieved !== undefined ? { conflictRetrieved } : {},
-        ...selfRevisions === undefined ? {} : { selfRevisions },
-        ...thinkingRevisions === undefined ? {} : { thinkingRevisions },
       }
     },
     presentCall: (args) => {

@@ -7,7 +7,7 @@
  * to treat it as material rather than as fact.
  */
 
-import { buildThinkChildPrompt, formatThinkDeepOutput } from '../src/think.js'
+import { buildThinkChildPrompt } from '../src/think.js'
 import { buildRefinePrompt, buildConflictSearchPrompt } from '../src/verify.js'
 import { DELEGATION_GUIDANCE } from '../src/index.js'
 
@@ -73,27 +73,6 @@ console.log('buildRefinePrompt')
   check('asks for a corrected conclusion', prompt.includes('corrected conclusion'))
 }
 
-console.log('formatThinkDeepOutput')
-{
-  const text = formatThinkDeepOutput({
-    conclusion: 'the answer',
-    keyPoints: [],
-    assumptions: [],
-    risks: [],
-    thinkingRevisions: 12,
-  })
-  check('reports the thinking child revisions', text.includes('revised itself 12 times'))
-  check('says the conclusion is settled by that reasoning', text.includes('settled by that reasoning'))
-}
-{
-  const text = formatThinkDeepOutput({
-    conclusion: 'the answer',
-    keyPoints: [],
-    assumptions: [],
-    risks: [],
-  })
-  check('says nothing about revisions when there were none', !text.includes('revised itself'))
-}
 console.log('DELEGATION_GUIDANCE')
 {
   check('says the agent reaches for delegation on its own', DELEGATION_GUIDANCE.includes('Reach for these on your own'))

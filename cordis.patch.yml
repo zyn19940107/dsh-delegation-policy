@@ -23,6 +23,4 @@
         verifyRounds: 2
         verifyProvider: spawn
         verifyTimeoutMs: 600000
-        oscillationThreshold: 12
-        oscillationAction: observe
         conflictSearchCalls: 2
