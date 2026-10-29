@@ -1,333 +1,158 @@
-# @zyn19940107/dsh-delegation-policy
+# dsh-delegation-policy
 
-A [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) plugin that turns the
-delegation policy into **executable rules** instead of prose in `AGENTS.md`.
+给 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) 用的委派策略插件：把"该搜就搜、该想就想"从提示词里的**建议**，变成运行时**拦得住的规则**。
 
-Two shapes of delegation, two routes:
+![演示](docs/demo.gif)
 
-| Route | Provider | Child context | Parent receives |
+---
+
+## 它解决什么
+
+小模型有两条坏毛病：
+
+1. **该搜的不搜** —— 凭记忆答版本号、发布日期、API 行为，答错了还很有自信。
+2. **该想的不想** —— "用队列还是读写分离"、"指数退避还是固定间隔"这种判断题，它直接凭直觉答了。
+
+写在 `AGENTS.md` 里没用 —— 那是建议，模型一忙起来就忘。这个插件把规则写在**执行点**上：模型做错了，插件当场拦。
+
+---
+
+## 三条路线
+
+| 工具 | 干什么 | 子代理拿到的上下文 | 主 agent 拿到的 |
 |---|---|---|---|
-| `search_web` | `spawn` | clean | a distilled answer + its citations |
-| `think_deep` | `fork` | the parent's completed-turn prefix | a structured conclusion |
-| `subagent` / `subagent_fork` | — | the caller's choice | the child's final text |
+| `search_web` | 外部事实 | 干净 | 结论 + 出处（网页正文不进主对话） |
+| `think_deep` | 判断题 | 继承本对话 | 结构化结论（结论/关键点/假设/风险/验证） |
+| `subagent` / `subagent_fork` | 其它自足任务 | 你选 | 子代理的最终文本 |
 
-Two rules are enforced **at the point where a call is decided**, not asked for in a prompt:
+---
 
-- A direct `web_search` is refused outside a delegation. The guard recognises the
-  `origin: 'subagent'` header on a child's session, so a delegation's own child may still search.
-- Every delegated child has a **retrieval budget**. The child's `web_search` and `web_fetch`
-  calls are counted at `tools/pre-execute`; past the budget the call is denied and the child is
-  told to answer with what it already has.
+## 三条硬规则
 
-## Why the two routes differ
+### 1. 主 agent 不能直接上网
 
-`search_web` runs in a **clean** child. The retrieved corpus is the most expensive thing in a
-conversation and it is re-sent every turn, so it must never enter the parent. A relay summary
-would cost the parent its context and lose detail; the child has neither problem.
+直接调 `web_search` / `web_fetch` / `read_page` 会被**拒绝**，并被告知改用 `search_web`。
 
-`think_deep` runs in a **fork** child. The fork provider seeds the child with the parent's
-completed-turn prefix, so the child reasons over everything already established in the
-conversation without a relay prompt. Its reasoning stays in the child's session: the tool result
-carries only the structured conclusion.
+判断依据是子代理会话头里的 `origin: 'subagent'` —— 所以子代理自己搜是允许的，被拒的只有主对话。
 
-Two properties of the fork provider are worth knowing before using it:
+### 2. 每个子代理有检索预算
 
-- **Only completed turns are inherited.** A fork during the parent's first turn gets an empty
-  seed, which is equivalent to a fresh child.
-- **The inherited history is re-sent on every child turn.** The parent saves its context; the
-  child pays per turn.
+子代理的 `web_search` / `web_fetch` 调用次数在 `tools/pre-execute` 处计数，超了直接拒绝，并告诉它"用手上已有的材料作答"。
 
-## Install
+### 3. 判断题必须委派（这条是新的，也是最关键的）
 
-From a clone:
+光有提示词不够 —— 模型会自己跳过分类。所以：
+
+- 插件给主 agent 一个工具 **`classify_question`**：它必须**自己**说明这题是不是判断题（推荐、比较、取舍、设计、风险分析）以及为什么。
+- 插件在**模型这一轮说完话的那一刻**检查：
+  - 没分类 ⇒ **把模型拽回同一轮**，要求先分类，这一轮不许结束；
+  - 判成判断题但还没委派 ⇒ 同样拽回，要求先 `think_deep`；
+  - 连着拽 2 次还不照做 ⇒ 放行（门是规矩，不是陷阱）。
+
+> 拦在"这一轮说完"而不是"这一轮结束"，是因为一轮结束要么是某个工具结果宣告的，要么是模型自己答完了 —— 只有后者值得拽。
+>
+> 门只作用于主 agent。子代理有**完全权限**，想用什么工具用什么。
+
+---
+
+## `think_deep` 里面发生了什么
+
+```
+think_deep(task, focus?)
+│
+├─① 第一轮推理 ── fork 子代理（继承本对话全部历史）
+│     └─ 同时旁听它的流 ── 收集它写的 reasoning + content
+│
+├─② 提取关键词 ── spawn 子代理（跑在你指定的模型上）
+│     输入 = ① 的 transcript（推理 + 回答）
+│     输出 = 关键词（≤ 你设的上限）
+│
+├─③ 检索 ── spawn 子代理（干净上下文）
+│     输出 = 知识（答案 + 出处）
+│
+├─④ 第二轮推理 ── fork 子代理
+│     输入 = 原问题 + ①的结论 + ③的知识
+│
+├─⑤ 对抗验证 ── spawn 子代理（干净上下文，敌对角色，专找毛病）
+│     输出 = confirmed / conflict + 问题清单 + 证据
+│
+├─⑥ 若冲突 ── 定向检索（只查有争议的点）+ 修正轮
+│
+└─⑦ 返回主 agent：结论 / 关键点 / 假设 / 风险 / 验证
+```
+
+两个要点：
+
+- **② 吃的是孩子自己的话，不是结论摘要**。要核实的说法就写在孩子写的 reasoning 里，所以提取器读的是那份 transcript。
+- **知识不外泄**。检索到的语料只走 ③ → ④ 这条线，不出现在 `think_deep` 的返回值里 —— 主 agent 拿到的是**第二轮之后的结论**，不是那份语料。
+
+---
+
+## 安装
 
 ```sh
+# 从 GitHub 直接装（pnpm 会跑 prepare 脚本自动打包）
+dsh plugin add github:zyn19940107/dsh-delegation-policy
+
+# 或从本地
 git clone https://github.com/zyn19940107/dsh-delegation-policy
-cd dsh-delegation-policy
-pnpm install        # installs dev dependencies and builds lib/index.js
+cd dsh-delegation-policy && pnpm install
 dsh plugin add /path/to/dsh-delegation-policy
 ```
 
-Or straight from GitHub — pnpm runs the package's `prepare` script, so the bundle is built
-before the Loader mounts it:
+插件会注册一个 Loader 行 `delegation-policy`，配置就是普通的 profile 条目。
 
-```sh
-dsh plugin add github:zyn19940107/dsh-delegation-policy
-```
+---
 
-The plugin registers a Loader row named `delegation-policy`, so its configuration is a normal
-profile entry:
+## 配置
+
+### 在设置页改（推荐）
+
+插件页 → Plugins → **Delegation policy**：
+
+| 项 | 说明 |
+|---|---|
+| **关键词提取器模型** | ② 那个子代理跑在哪个模型上（可以选别的 provider 的模型） |
+| **最多提取几个关键词** | ② 最多命名几个检索词 |
+| **强制把判断类问题交给委派** | 关掉就没有判断门（默认开） |
+
+设置页的写入落到 `cordis.patch.yml` 里同一个条目 —— 页面和 YAML 是同一份配置的两面。
+
+### 在 YAML 里改
 
 ```yaml
 - insert:
     - id: delegation-policy
       name: '@zyn19940107/dsh-delegation-policy'
       config:
-        searchProvider: spawn
-        maxSources: 5
-        maxSnippetChars: 400
-        maxChildCalls: 3
-        searchTimeoutMs: 600000
-        thinkProvider: fork
-        maxThinkCalls: 5
-        thinkTimeoutMs: 900000
-        verifyRounds: 2
-        verifyProvider: spawn
-        verifyTimeoutMs: 600000
+        searchProvider: spawn          # 搜索子代理
+        thinkProvider: fork            # 思考子代理（fork 继承本对话）
+        verifyProvider: spawn          # 验证子代理
+        keywordAgentProvider: spawn    # 提取器子代理
+        keywordModel: deepseek-v4-pro  # 提取器用的模型
+        keywordModelProvider: deepseek-official
+        keywordMaxCount: 3             # 最多几个关键词
+        keywordSearchCalls: 3          # 关键词检索的调用预算
+        judgementEnabled: true         # 判断门
+        judgementMaxPullbacks: 2       # 最多拽回几次
+        watchMaxChars: 8000            # 提取器能读多少孩子的 transcript
 ```
 
-## A judgement inside a larger task
+配置在**调用时**读取，不是插件启动时读 —— 设置页保存完，下一次 `think_deep` 就生效，不用重启。
 
-A task that mixes a judgement with mechanical work is two tasks: delegate the judgement first, with the
-judgement in `focus`, and do the work afterwards.
+---
 
-The exemption for a continuous edit covers the edit — it keeps one edit from being broken into
-fragments — and it does not cover the reasoning. A model read it the other way once: it treated a
-whole implementation task as one continuous edit and reasoned through the geometry inside it, changing
-its model of the part three times before the user pointed out that the direction was wrong. The
-guidance now says so explicitly, and a spec keeps the wording from being narrowed back.
-
-## The pipeline: reason, ground, verify
-
-```
-think_deep(task, focus, verify?)
-  └─ fork#1  reasons over this conversation → conclusion
-       └─ spawn#1  names the terms that would have to be checked → keyword terms
-            └─ spawn#2  looks up ONLY those terms
-                 └─ fork#2 revises the conclusion with what that search found
-                      └─ spawn#3 refutes the conclusion  → confirmed | conflict
-                           └─ on conflict: spawn#4 looks up ONLY the disputed points
-                                └─ fork#3 revises, and spawn#5 reviews the revision
-  returns the conclusion, the terms that were checked, what the lookup found, and the verification record
-```
-
-**The pipeline does not retrieve the subject.** The thinking child is a fork: it inherits this
-conversation, including anything the parent already searched for, so retrieving again would read the
-same material twice and put a second corpus in the prompt that the parent never asked for. External
-knowledge enters through the parent's `search_web`, which is the one route to the web from this
-conversation.
-
-The one retrieval inside the pipeline is aimed at **what the conclusion rests on**, not at the subject:
-the extractor names the terms that a reader would have to check before relying on the conclusion, and
-the lookup covers those terms and nothing else. The extractor is a separate child with its own model,
-because naming the terms is a different job from reasoning about them — and a cheap model can do it.
-The child is told that "the record does not settle this" is a valid result, because a contradiction the
-sources cannot resolve has to be reported rather than argued away.
-
-## Verification: a second child that refutes the conclusion
-
-A child that reasons over a corpus can derive a conclusion its sources do not support — a
-retrieved fact and a guessed consequence look identical from the outside. The plugin closes that
-gap the way a test suite closes it: with a **separate child whose job is to refute the
-conclusion**.
-
-`think_deep` runs that pass by default:
-
-```
-think_deep(task, focus, verify?)
-  └─ fork#1   reasons over this conversation      → conclusion C1
-       └─ spawn#1  adversarial review of C1        → confirmed | conflict
-            └─ on conflict and a round left: fork#2 revises C1 against the objections
-                 └─ spawn#2 reviews the revision  → confirmed | conflict
-  returns the final conclusion plus the verification record
-```
-
-The verifier is a `spawn` child, so it inherits none of the thinking child's reasoning and reads
-the conclusion cold. It is told to attack the **derived** claims, and it is told how to search:
-for what the thing actually *is*, not for a phrase that happens to contain its words — the
-difference between "what is this for" (finds a corn-shaped hot pad holder) and "corn and this"
-(finds corn).
-
-The verification record travels with the conclusion: the number of passes, the verdict, the
-problems the reviewer raised, and the sources it used. A conclusion that nobody could source is
-reported as such rather than dropped silently.
-
-A verifier that answered in prose delivered no verdict, and that is not a confirmation: the pass
-is reported as a conflict with the prose as the objection.
-
-Verification costs one extra child and one extra round trip. Pass `verify: false` for a cheap
-question, or set `verifyRounds: 0` in the configuration to turn the pass off entirely.
-
-## Configuration
-
-| Key | Default | Meaning |
-|---|---|---|
-| `searchProvider` | `spawn` | provider that runs the search child |
-| `maxSources` | `5` | sources returned to the parent |
-| `maxSnippetChars` | `400` | excerpt budget per source |
-| `maxChildCalls` | `3` | retrieval calls the search child may make |
-| `searchTimeoutMs` | `600000` | budget for one delegated search |
-| `thinkProvider` | `fork` | provider that runs the thinking child |
-| `maxThinkCalls` | `5` | retrieval calls the thinking child may make |
-| `thinkTimeoutMs` | `900000` | budget for one delegated thought |
-| `verifyRounds` | `2` | verification passes a delegated thought may run |
-| `verifyProvider` | `spawn` | provider that runs the verifier |
-| `verifyTimeoutMs` | `600000` | budget for one verification pass |
-| `conflictSearchCalls` | `2` | retrieval calls the conflict lookup may make |
-| `keywordAgentProvider` | `spawn` | provider that runs the keyword extractor |
-| `keywordModel` | *(unset)* | model the keyword extractor runs on; the parent's when unset |
-| `keywordModelProvider` | *(unset)* | llm provider the extractor's model belongs to |
-| `keywordMaxCount` | `3` | how many terms the extractor may name |
-| `keywordSearchCalls` | `3` | retrieval calls the term lookup may make |
-
-## The settings page
-
-The plugin ships its own page on the Plugins page, under its bundle's row (**委派策略** /
-**Delegation policy**). It edits two things the plugin cannot decide for itself:
-
-- **the model the keyword extractor runs on**, chosen from the models this deployment can actually
-  route to, so the setting cannot name a model that does not exist; leaving it empty keeps the
-  extractor's model equal to the conversation's own. The models are grouped by the provider that
-  serves them, and choosing one writes the provider with it — a model id is only reachable through
-  the route that serves it.
-- **how many terms the extractor may name** for one delegated thought.
-
-The page stages what you change and writes it when you save, like every other settings page. Both
-values are read when a delegated thought runs, not when the plugin starts, so a saved change takes
-effect on the next `think_deep` without a restart. The page writes into the same profile entry the
-YAML above configures: the two are the same values seen from two sides.
-
-## Making a judgement delegate
-
-The routing rules above are advice, and advice is what a model forgets under
-pressure. The plugin therefore makes the decision unavoidable.
-
-The agent classifies its own question. A `classify_question` tool asks it to
-state whether the question is a judgement — a recommendation, a comparison, a
-trade-off, a design, a risk analysis — and why. The plugin does not classify on
-its behalf: the agent read the question, so the agent classifies it.
-
-Then the plugin checks the answer rather than the intention. When the agent's
-answer is finished, the plugin looks at what the turn has established:
-
-- a turn that never classified is pulled back and told to classify first;
-- a turn classified as a judgement may not end before a delegated thought has
-  answered it.
-
-The pullback steers the agent back into the same turn, so the turn does not end
-until the rule is satisfied. A turn that refuses to classify a few times is let
-through: the gate is a rule, not a trap, and a model that cannot state its
-conclusion must still be able to answer.
-
-The classification belongs to the conversation that asked the question, so
-the gate only ever holds the main agent. A delegated child may use every tool
-the parent has — the thinking child, the extractor, the verifier and the search
-children all run with full permissions — and none of them is ever pulled back
-for not having classified.
-
-Every delegated child is disposed when its part of the flow is over: the
-search child is closed once it has returned its knowledge, the extractor once
-it has named its terms, the thinking child once it has produced its conclusion.
-
-## The grounding pass reads the child's own work
-
-The extraction that names the search terms is not given the conclusion and the
-key points. It is given **the delegated child's own transcript** — the
-reasoning and the answer the child wrote — because that text is where the
-claims that need checking actually are. A fork child runs in the same process,
-so its stream is watched while it writes, and the extractor reads what it wrote.
-
-The extractor names terms and nothing else. The retrieval belongs to a separate
-child with a clean context, and the knowledge that comes back goes to the
-delegated thought, not to the parent: the parent receives the second round's
-reasoning, which is the answer, and never the corpus that shaped it.
-
-## The parent's only route to the web
-
-The guard refuses web_search, web_fetch and ead_page in the parent conversation. A delegated
-child may use all three; the parent may not.
-
-Refusing only the search was not enough: measured in the sandbox, a model answered "what does this
-page say" by fetching it, and 16 KB of page landed in the conversation the delegation exists to keep
-clean. With the fetch refused as well, the same prompt put the whole 32 KB of pages in the child and
-the parent received a 2.4 KB distilled answer.
-
-The parent that needs the original wording of a page gets it from the child, which reports it with its
-citations.
-
-Every delegated child carries a retrieval budget: `web_search` and `web_fetch` calls are counted per
-child session, and the child is told to answer with what it has when the budget runs out. A child
-this plugin started carries the limit of its route (`maxChildCalls` for a search child,
-`maxThinkCalls` for a thinking or verifying child). Any other delegated child carries the larger of
-the two, so the policy is not bypassed by taking another route to the same place.
-
-The search backend is a separate concern: **this plugin never chooses one.** Point
-`web.searchProvider` at whatever the profile already pins.
-
-## The thinking child's tool set
-
-A child that reasons about the work has no business mutating it, so the thinking child runs with
-the mutating tools restricted — the shell and the file-writing tools of whatever this profile
-mounts, `present`, `workflow`, and the delegation tools themselves are denied, leaving the read
-and search tools. The shell and file-writing names are matched by pattern (`bash`, `pwsh`,
-`ops_bash`, `write`, `edit`, …) rather than listed, because a profile names them differently.
-
-Resolving that list is subtle. `tools.restrict()` rejects a name the child does not know, and the
-child's scope is **neither** the parent's scope **nor** the global view — a name the parent can see
-(`schedule_create`) may still be unknown to the child, and a name in the global view
-(`search_web`) may be invisible to the parent's scope. So the list is seeded from the parent's
-scope, and when the child rejects it, the failure names every tool the child accepts; the plugin
-recovers that list, remembers it, and retries. The failed spawn publishes no child, so the retry
-is safe, and later delegations restrict on the first attempt.
-
-## When the child answers in prose
-
-A child asked for a structured result may answer in prose instead of calling `structured_output`.
-The driver reports that run as an error even when its turn completed cleanly, and it reports the
-child's answer in the output regardless. The projection therefore reads the answer **before** it
-judges the stop reason: a finished deliberation is not discarded because the child skipped a tool
-call.
-
-The projections live in `src/project.ts` as pure functions, so that decision is testable without a
-runtime.
-
-## Measured behaviour
-
-Sandbox runs on `MiniMax-M3.1-Flash-Preview`:
-
-- `search_web`: the child's corpus stays out of the parent; the parent's context stayed flat at
-  1–2% across a search.
-- `think_deep`: a 2m40s delegated thought left the parent at 2% context while the child's session
-  log grew past 86 KB. The parent received the conclusion, key points, assumptions, and risks —
-  nothing else.
-
-The saving is not free: the cost moves from the parent's context into the child's turns and
-wall-clock time.
-
-## Layout
-
-```
-src/index.ts     entry: registers both tools, the guard, the budget, the prompt section
-src/search.ts    search_web: spawn child, budgeted retrieval, projection
-src/think.ts     think_deep: fork child, tool restriction, extraction, verification, projection
-src/keywords.ts  the keyword extractor: the terms a conclusion would have to be checked against
-src/verify.ts    the verifier: adversarial review of a conclusion, and the revision it triggers
-src/project.ts   pure projections from a child's result to the parent's view
-src/guard.ts     the execution-point rules: the search guard, the retrieval budget
-src/client/      the settings page: the browser half, on the Plugins page's row
-verify/          specs and session-log readers
-```
-
-`verify/read-session-log.mjs` decodes a DSH session log — a concatenation of independently written
-zstd frames, so a whole-buffer decompress yields only the first one. `verify/summarize-log.mjs`
-reports the tools an agent was offered, the calls it made, and what its final message contained.
-
-## Development
+## 开发
 
 ```sh
-pnpm install        # install dependencies and build
-pnpm run build      # bundle src/index.ts to lib/index.js and src/client to lib/client.js
-pnpm run typecheck  # tsc --noEmit, both faces
-node verify/run-specs.mjs
+pnpm build        # 打包宿主端 lib/index.js 和浏览器端 lib/client.js
+pnpm typecheck    # 两端都查
+pnpm specs        # 规格
 ```
 
-The specs cover the projections, including the case this plugin exists to survive: a child that
-answers in prose while the driver reports an error.
+规格在 `verify/`，每个跑在自己的进程里。
 
-The browser half is a separate artifact: the browser loads a client bundle as a classic script that
-registers itself with the module loader, so `lib/client.js` is CommonJS wrapped in the loader's
-registration call. Only `react` and `react/jsx-runtime` stay external — the browser's module table
-already carries them, and a second copy of React would break the hooks.
+---
 
 ## License
 
