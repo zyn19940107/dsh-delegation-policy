@@ -29,7 +29,7 @@ import {
   NEEDS_CLASSIFICATION,
   NEEDS_DELEGATION,
 } from './classify.js'
-import { checkChildBudget, createChildBudget, createWebGuard } from './guard.js'
+import { checkChildBudget, createChildBudget, createNoRedelegationGuard, createWebGuard } from './guard.js'
 import { DEFAULT_WATCH_MAX_CHARS } from './watch.js'
 import {
   DEFAULT_KEYWORD_AGENT_PROVIDER,
@@ -239,6 +239,17 @@ export function apply(ctx: Context, config: Config): void {
 
   ctx.tools.guard(createWebGuard())
 
+  // Only the conversation that asked the question, and the thinking child this
+  // plugin forked, may start another agent. Every other child is refused: a
+  // chain of them searches the same things again at every level, and the
+  // levels are invisible to the parent.
+  //
+  // The thinking child may start a child but not a search. A search child
+  // that asked for another search would nest one inside the other, and every
+  // level would look for the same material again.
+  const forkSessions = new Set<string>()
+  ctx.tools.guard(createNoRedelegationGuard(forkSessions, new Set()))
+
   // The judgement gate. The agent states its own classification; the plugin
   // makes the statement unavoidable by checking, at the point where the agent's
   // answer is finished, that the answer classified its question and — when the
@@ -270,7 +281,11 @@ export function apply(ctx: Context, config: Config): void {
     if (missing === undefined) {
       log(`delegation-policy: the answer of session ${sessionId} passed the judgement gate `
         + `(classified=${state.classified}, judgement=${state.verdict}, delegated=${state.delegated})`)
-      gate.clear(sessionId)
+      // The state is not cleared here. A turn has one closing frame per step,
+      // and a step that used a tool is not the turn's last word — clearing on
+      // the first frame would make the second frame find nothing classified
+      // and pull the agent back for no reason. The state is cleared when the
+      // next turn opens.
       return
     }
     const pullbacks = gate.pullback(sessionId)
@@ -296,6 +311,13 @@ export function apply(ctx: Context, config: Config): void {
     if (exec.agent !== undefined) tooledThisStep.set(exec.agent, true)
     const denial = checkChildBudget(budget, exec)
     if (denial !== undefined) return { kind: 'deny', reason: denial }
+    return next()
+  })
+
+  // A turn starts over: what the previous turn classified says nothing about
+  // this one, and the question may be a different kind.
+  ctx.on('agent/pre-step', async (payload, next) => {
+    if (payload.step === 1) gate.clear(payload.agent.session.id)
     return next()
   })
 
@@ -333,5 +355,7 @@ export function apply(ctx: Context, config: Config): void {
       maxChildCalls: config.maxChildCalls.get(),
       timeoutMs: config.searchTimeoutMs.get(),
     },
-  }), budget, (sessionId) => { gate.markDelegated(sessionId) })
+  }), budget,
+  (sessionId) => { gate.markDelegated(sessionId) },
+  (sessionId) => { forkSessions.add(sessionId) })
 }

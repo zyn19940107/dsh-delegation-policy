@@ -21,6 +21,7 @@ import { projectThinkResult } from './project.js'
 import { delegateSearch, type SearchConfig } from './search.js'
 import {
   buildKeywordSearchPrompt,
+  dropAlreadySearched,
   runKeywordExtractor,
   type KeywordConfig,
 } from './keywords.js'
@@ -178,6 +179,7 @@ export function buildRethinkPrompt(
   conclusion: string,
   keyPoints: readonly string[],
   retrieved: { answer: string, sources: { url: string, title?: string }[] },
+  alreadySearched: readonly string[] = [],
 ): string {
   return [
     'You reached the conclusion below by reasoning about a question. Parts of it would have to be '
@@ -192,6 +194,15 @@ export function buildRethinkPrompt(
     '',
     ...keyPoints.length > 0
       ? ['The points that carried it:', ...keyPoints.map((point) => `- ${point}`), '']
+      : [],
+    ...alreadySearched.length > 0
+      ? [
+        'What has already been looked up — do not look it up again:',
+        ...alreadySearched.map((item) => `- ${item}`),
+        'Anything here that the material below does not settle is still unsettled. Do not go and search '
+        + 'it a second time; say that it is unsettled.',
+        '',
+      ]
       : [],
     'What the sources say:',
     '---',
@@ -260,14 +271,11 @@ export function formatThinkDeepOutput(value: ThinkDeepOutput): string {
  *
  * @param task - what to think through.
  * @param focus - what the conclusion must settle, when the caller narrowed it.
- * @param maxCalls - the retrieval calls the child has.
- * @param retrieved - the external knowledge the pipeline gathered first.
  * @returns the child's instruction.
  */
 export function buildThinkChildPrompt(
   task: string,
   focus: string | undefined,
-  maxCalls: number,
 ): string {
   const parts: string[] = [`Think this through thoroughly: ${task}`]
   if (focus !== undefined && focus.trim().length > 0) {
@@ -277,8 +285,8 @@ export function buildThinkChildPrompt(
     'You have the full context of this conversation, including everything already established and every '
     + 'earlier conclusion. Use it: check the premises, weigh the alternatives, and build on what is '
     + 'already settled instead of re-deriving it.',
-    `You have a reading budget of ${maxCalls} retrieval calls if you need to check something external. `
-    + 'Spend them only on what the conversation does not already settle.',
+    'Your job is to think, not to look things up. The external knowledge this question needs is '
+    + 'gathered for you and arrives with the material; the retrieval is not your task.',
   )
   parts.push(
     'Then deliver your result with the structured_output tool:',
@@ -308,12 +316,15 @@ export function buildThinkChildPrompt(
  * @param onAnswered - called with the answering agent's session id once a
  * delegated thought has produced a conclusion, so a turn that delegated can be
  * recognised as one that did.
+ * @param onForked - called with the session id of each thinking child, which
+ * is the one kind of child allowed to start another child of its own.
  */
 export function applyThinkTool(
   ctx: Context,
   readConfig: () => ThinkConfig,
   budget: ChildBudget,
   onAnswered?: (sessionId: string) => void,
+  onForked?: (sessionId: string) => void,
 ): void {
   const registered = readConfig()
   ctx.tools.register(defineTool({
@@ -460,6 +471,10 @@ export function applyThinkTool(
         }
         const run = await ctx.subagents.start(config.provider, base)
         registerChild(budget, run.id, config.maxChildCalls)
+        // The thinking child may start a child of its own: it reasons over this
+        // conversation and may want a child's help to settle a point. Every
+        // other child this plugin starts may not.
+        onForked?.(run.id)
         // Watch the child's own stream. A fork child runs in this process, so
         // its reasoning and its answer can be watched as it writes them; the
         // extractor is the child that turns that transcript into search terms.
@@ -474,7 +489,7 @@ export function applyThinkTool(
         }
       }
 
-      let prompt = buildThinkChildPrompt(parsed.task, parsed.focus, config.maxChildCalls)
+      let prompt = buildThinkChildPrompt(parsed.task, parsed.focus)
       const first = await runThinking(prompt)
       let projected = first.projected
       let conclusion = projected.conclusion
@@ -495,15 +510,21 @@ export function applyThinkTool(
         exec.signal,
         trimTranscript(first.transcript, config.watchMaxChars),
       )
+      // The child may have looked things up while it reasoned. Those lookups
+      // are not in the parent's context, so the pipeline cannot see them by
+      // itself — the extractor reports them, and the terms it names are not
+      // searched again.
+      const alreadySearched = extracted.alreadySearched
+      const fresh = dropAlreadySearched(extracted.keywords, alreadySearched)
       let keywordRetrieved: RetrievedKnowledge | undefined
-      if (extracted.keywords.length > 0) {
+      if (fresh.length > 0) {
         const projection = await delegateSearch(
           ctx,
           { ...config.search, maxChildCalls: config.keywordSearchCalls },
           budget,
           parent,
           exec.signal,
-          buildKeywordSearchPrompt(extracted.keywords, config.keywordSearchCalls),
+          buildKeywordSearchPrompt(fresh, config.keywordSearchCalls),
           config.keywordSearchCalls,
         )
         keywordRetrieved = {
@@ -513,8 +534,10 @@ export function applyThinkTool(
             ...source.title === undefined ? {} : { title: source.title },
           })),
         }
+      }
+      if (keywordRetrieved !== undefined) {
         const rethought = await runThinking(
-          buildRethinkPrompt(parsed.task, conclusion, keyPoints, keywordRetrieved),
+          buildRethinkPrompt(parsed.task, conclusion, keyPoints, keywordRetrieved, alreadySearched),
         )
         conclusion = rethought.projected.conclusion
         keyPoints = rethought.projected.keyPoints

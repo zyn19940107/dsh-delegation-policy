@@ -8,7 +8,7 @@
  * pages; the parent gets the answer.
  */
 
-import { createWebGuard, PARENT_DENIED_WEB_TOOLS } from '../src/guard.js'
+import { createNoRedelegationGuard, createWebGuard, PARENT_DENIED_WEB_TOOLS } from '../src/guard.js'
 
 let failures = 0
 
@@ -65,6 +65,38 @@ console.log('createWebGuard')
   check('the denied set covers the search', PARENT_DENIED_WEB_TOOLS.includes('web_search'))
   check('the denied set covers the fetch', PARENT_DENIED_WEB_TOOLS.includes('web_fetch'))
   check('the denied set covers the page reader', PARENT_DENIED_WEB_TOOLS.includes('read_page'))
+}
+
+console.log('createNoRedelegationGuard')
+{
+  // Only the conversation that asked, and the thinking child this plugin
+  // forked, may start another child — and the thinking child may not start a
+  // search, because a search inside a search looks for the same material
+  // twice.
+  const thinking = new Set(['think-1'])
+  const guard = createNoRedelegationGuard(thinking, new Set())
+  check('refuses search_web in a child', guard(execution('c', 'subagent', 'search_web')) !== undefined)
+  check('refuses think_deep in a child', guard(execution('c', 'subagent', 'think_deep')) !== undefined)
+  check('refuses subagent in a child', guard(execution('c', 'subagent', 'subagent')) !== undefined)
+  check('refuses subagent_fork in a child', guard(execution('c', 'subagent', 'subagent_fork')) !== undefined)
+  check('leaves the parent\'s own tools alone', guard(execution('p', 'user', 'search_web')) === undefined)
+  check('leaves the parent\'s subagent alone', guard(execution('p', 'user', 'subagent')) === undefined)
+  check('allows the thinking child to start a child', guard(execution('think-1', 'subagent', 'subagent')) === undefined)
+  check('allows the thinking child to fork', guard(execution('think-1', 'subagent', 'subagent_fork')) === undefined)
+  check('refuses a search inside the thinking child', guard(execution('think-1', 'subagent', 'search_web')) !== undefined)
+  check('leaves a child\'s own web search alone', guard(execution('c', 'subagent', 'web_search')) === undefined)
+  check('leaves a child\'s page fetch alone', guard(execution('c', 'subagent', 'web_fetch')) === undefined)
+  check('leaves the other tools alone', guard(execution('c', 'subagent', 'read')) === undefined)
+}
+{
+  const guard = createNoRedelegationGuard(new Set(), new Set(['searcher-1']))
+  check('allows a designated searcher to search', guard(execution('searcher-1', 'subagent', 'search_web')) === undefined)
+  check('still refuses it to delegate', guard(execution('searcher-1', 'subagent', 'subagent')) !== undefined)
+}
+{
+  const denial = createNoRedelegationGuard(new Set())(execution('c', 'subagent', 'search_web'))
+  check('names the tool it refused', denial !== undefined && denial.includes('search_web'))
+  check('tells the child to do the work itself', denial !== undefined && denial.includes('yourself'))
 }
 
 console.log(failures === 0 ? '\nall checks passed' : `\n${failures} check(s) failed`)

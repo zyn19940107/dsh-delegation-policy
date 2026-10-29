@@ -31,15 +31,19 @@ function check(name: string, condition: boolean, detail = ''): void {
 
 console.log('buildThinkChildPrompt')
 {
-  const plain = buildThinkChildPrompt('what should we do', undefined, 5)
+  const plain = buildThinkChildPrompt('what should we do', undefined)
   check('has no retrieval section', !plain.includes('External knowledge'))
   check('still asks for the structured result', plain.includes('structured_output'))
+  // The child is not invited to go looking. It keeps its tools, but the
+  // prompt does not hand it a reading budget to spend.
+  check('offers no retrieval budget', !plain.includes('retrieval calls'))
+  check('says the retrieval is not its task', plain.includes('the retrieval is not your task'))
 }
 {
-  const prompt = buildThinkChildPrompt('what should we do', 'the migration order', 5)
+  const prompt = buildThinkChildPrompt('what should we do', 'the migration order')
   check('keeps the conversation instruction', prompt.includes('full context of this conversation'))
   check('carries no retrieval material of its own', !prompt.includes('External knowledge'))
-  check('states the reading budget', prompt.includes('5 retrieval calls'))
+  check('does not offer a reading budget', !prompt.includes('reading budget'))
 }
 
 console.log('formatThinkDeepOutput')
