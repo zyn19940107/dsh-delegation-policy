@@ -17,6 +17,7 @@ import {
   SettingsFormModel,
   settingsNumberField,
   settingsTextField,
+  type SettingsFieldSpec,
   type SettingsFieldState,
   type SettingsFormActions,
   type SettingsFormShell,
@@ -32,6 +33,9 @@ export const PROVIDER_FIELD = 'keywordModelProvider'
 /** Field the extractor's term count is written to. */
 export const COUNT_FIELD = 'keywordMaxCount'
 
+/** Field the judgement gate's switch is written to. */
+export const JUDGEMENT_FIELD = 'judgementEnabled'
+
 /** The fields this page edits. */
 export interface DelegationSettings {
   /** The model the extractor runs on; the parent's when absent. */
@@ -40,6 +44,8 @@ export interface DelegationSettings {
   keywordModelProvider?: string
   /** How many search terms the extractor may name. */
   keywordMaxCount?: number
+  /** Whether a turn must classify its question before it may end. */
+  judgementEnabled?: boolean
 }
 
 /** One provider and the models it can route to. */
@@ -50,12 +56,31 @@ export interface DelegationModelGroup {
   readonly models: readonly string[]
 }
 
+/**
+ * A switch field.
+ *
+ * The shared form model knows text and number fields; a switch is its own
+ * conversion, so this page carries the one it needs.
+ *
+ * @param field - field name inside the namespace section.
+ * @returns the field's conversion spec.
+ */
+function settingsBooleanField(field: string): SettingsFieldSpec {
+  return {
+    field,
+    format: value => (typeof value === 'boolean' ? (value ? 'on' : 'off') : 'off'),
+    parse: (text) => ({ kind: 'set', value: text.trim() === 'on' }),
+  }
+}
+
 /** What the page renders. */
 export interface DelegationCardState extends SettingsFormShell {
   /** The extractor's model. */
   keywordModel: SettingsFieldState
   /** The extractor's term count. */
   keywordMaxCount: SettingsFieldState
+  /** The judgement gate's switch. */
+  judgementEnabled: SettingsFieldState
   /** The providers with their models. */
   groups: readonly DelegationModelGroup[]
   /** Whether the model catalog could not be read. */
@@ -151,7 +176,12 @@ export class DelegationCardController {
     this.catalog = catalog
     this.form = new SettingsFormModel(
       scope,
-      [settingsTextField(MODEL_FIELD), settingsTextField(PROVIDER_FIELD), settingsNumberField(COUNT_FIELD)],
+      [
+        settingsTextField(MODEL_FIELD),
+        settingsTextField(PROVIDER_FIELD),
+        settingsNumberField(COUNT_FIELD),
+        settingsBooleanField(JUDGEMENT_FIELD),
+      ],
     )
     this.store = this.form.bind(() => this.projection())
     catalog.onChange = () => { this.store.set(this.projection()) }
@@ -171,6 +201,7 @@ export class DelegationCardController {
       ...this.form.shell(),
       keywordModel: this.form.field(MODEL_FIELD),
       keywordMaxCount: this.form.field(COUNT_FIELD),
+      judgementEnabled: this.form.field(JUDGEMENT_FIELD),
       groups: this.catalog.current,
       catalogFailed: this.catalog.catalogFailed,
     }

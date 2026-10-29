@@ -15,6 +15,7 @@
 
 import type { Context } from '@deepseek-ai/cordis'
 import type { Agent } from '@deepseek-ai/dsh-agent'
+import type { WatchedTranscript } from './watch.js'
 import type { ContentBlock } from '@deepseek-ai/dsh-llm'
 import type { ObjectJsonSchema } from '@deepseek-ai/dsh-tools'
 import { registerChild, releaseChildBudget, type ChildBudget } from './guard.js'
@@ -74,42 +75,40 @@ export interface KeywordConfig {
 /**
  * Build the extractor's instruction.
  *
- * The extractor is given the conclusion and the points that carry it, and
- * nothing else: it is asked which parts of a finished answer would have to be
- * checked against an outside source, which is a question about the text in
- * front of it.
+ * The extractor is the monitor of the delegated child's own work: it reads the
+ * reasoning and the answer the child wrote, and names the terms that would
+ * have to be looked up before anyone could rely on them. It is asked about the
+ * text in front of it, and about nothing else.
  *
- * @param conclusion - the conclusion to examine.
- * @param keyPoints - the points that carry the conclusion.
+ * @param transcript - what the delegated child wrote: its reasoning and its answer.
  * @param maxKeywords - how many search terms may be returned.
  * @returns the extractor's instruction.
  */
 export function buildKeywordPrompt(
-  conclusion: string,
-  keyPoints: readonly string[],
+  transcript: WatchedTranscript,
   maxKeywords: number,
 ): string {
   return [
-    'Below is a conclusion that was reached by reasoning. Your job is to say which parts of it would '
-    + 'have to be checked against an outside source before anyone could rely on it.',
+    'Below is the reasoning and the answer of a delegated child. Your job is to name the terms that '
+    + 'would have to be looked up before anyone could rely on that answer.',
     '',
-    'The conclusion:',
-    conclusion,
+    'The child\'s reasoning:',
+    transcript.reasoning.trim() === '' ? '(it wrote none)' : transcript.reasoning.trim(),
     '',
-    ...keyPoints.length > 0
-      ? ['The points that carry it:', ...keyPoints.map((point) => `- ${point}`), '']
-      : [],
+    'The child\'s answer:',
+    transcript.content.trim() === '' ? '(it wrote none)' : transcript.content.trim(),
+    '',
     `Return at most ${maxKeywords} search terms, each one a phrase someone could type into a search `
-    + 'engine to check one specific part of the conclusion. A term names the thing to look up ("TS 4.9 '
+    + 'engine to check one specific part of the answer. A term names the thing to look up ("TS 4.9 '
     + 'release date"), never the claim itself ("TypeScript 4.9 was released in November 2022").',
     'Look for the parts that are derived rather than settled: a version, a date, a number, a standard, '
-    + 'a product behaviour, a claim about what something is used for. A conclusion that rests only on '
+    + 'a product behaviour, a claim about what something is used for. An answer that rests only on '
     + 'reasoning needs no lookup.',
-    'Return fewer terms than the maximum when fewer are needed, and return none when the conclusion '
+    'Return fewer terms than the maximum when fewer are needed, and return none when the answer '
     + 'needs no external check at all.',
     'Then deliver your result with the structured_output tool:',
     '- keywords: the search terms, most important first.',
-    '- rationale: one sentence saying which part of the conclusion each term is for.',
+    '- rationale: one sentence saying which part of the answer each term is for.',
   ].join('\n')
 }
 
@@ -172,8 +171,7 @@ export function projectKeywords(value: unknown, maxKeywords: number): KeywordPro
  * @param budget - the budget that covers this route's children.
  * @param parent - the agent the extraction runs on behalf of.
  * @param signal - the caller's signal.
- * @param conclusion - the conclusion to examine.
- * @param keyPoints - the points that carry the conclusion.
+ * @param transcript - what the delegated child wrote: its reasoning and its answer.
  * @returns the search terms.
  */
 export async function runKeywordExtractor(
@@ -182,8 +180,7 @@ export async function runKeywordExtractor(
   budget: ChildBudget,
   parent: Agent,
   signal: AbortSignal,
-  conclusion: string,
-  keyPoints: readonly string[],
+  transcript: WatchedTranscript,
 ): Promise<KeywordProjection> {
   const agentOptions = config.model === undefined && config.modelProvider === undefined
     ? undefined
@@ -195,10 +192,15 @@ export async function runKeywordExtractor(
     parent,
     prompt: [{
       type: 'text',
-      text: buildKeywordPrompt(conclusion, keyPoints, config.maxKeywords),
+      text: buildKeywordPrompt(transcript, config.maxKeywords),
     }] as ContentBlock[],
     signal,
     outputSchema: KEYWORD_OUTPUT_SCHEMA,
+    // The extractor names terms; it does not answer, judge, or look them up.
+    // It reads the delegated child's transcript and returns search terms, so
+    // it has no tool of its own: the retrieval belongs to a separate child
+    // with a clean context.
+    toolFilter: { allow: [] },
     ...agentOptions === undefined ? {} : { agentOptions },
   })
   registerChild(budget, run.id, config.maxChildCalls)

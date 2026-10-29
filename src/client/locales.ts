@@ -7,6 +7,7 @@ export type DelegationSettingsLocaleKey =
   | 'title' | 'summary'
   | 'modelLabel' | 'modelHint' | 'modelInherit'
   | 'countLabel' | 'countHint'
+  | 'judgementLabel' | 'judgementHint'
   | 'overridden' | 'reset' | 'readOnly' | 'unavailable'
   | 'save' | 'saving' | 'saveFailed' | 'invalidNumber'
 
@@ -19,6 +20,8 @@ export const en: Record<DelegationSettingsLocaleKey, string> = {
   modelInherit: 'Same model as this conversation',
   countLabel: 'Max search terms per thought',
   countHint: 'How many terms the extractor may name for one delegated thought.',
+  judgementLabel: 'Require a judgement to be delegated',
+  judgementHint: 'The agent has to classify its question before it may answer it, and a question it classified as a judgement cannot be answered until think_deep has answered it.',
   overridden: 'Overridden',
   reset: 'Reset to default',
   readOnly: 'This deployment stores settings read-only.',
@@ -38,6 +41,8 @@ export const zh: Record<DelegationSettingsLocaleKey, string> = {
   modelInherit: '与本次对话相同的模型',
   countLabel: '每次思考最多提取的名词概念数',
   countHint: '一次委派思考中，提取器最多可以命名多少个检索词。',
+  judgementLabel: '强制把判断类问题交给委派',
+  judgementHint: '主 agent 必须先说明它对问题的判断，才能作答；被判为「判断类」的问题，必须等 think_deep 给出结论后才能作答。',
   overridden: '已覆盖',
   reset: '恢复默认',
   readOnly: '本部署的设置为只读。',

@@ -35,12 +35,15 @@ function check(name: string, condition: boolean, detail = ''): void {
 console.log('buildKeywordPrompt')
 {
   const prompt = buildKeywordPrompt(
-    'TypeScript 4.9 was released in November 2022 and introduced satisfies.',
-    ['the release month is November 2022'],
+    {
+      reasoning: 'The child weighed the queue against the direct call and settled on the direct call.',
+      content: 'TypeScript 4.9 was released in November 2022 and introduced satisfies.',
+    },
     3,
   )
-  check('carries the conclusion', prompt.includes('TypeScript 4.9 was released in November 2022'))
-  check('carries the key points', prompt.includes('the release month is November 2022'))
+  check('carries the reasoning', prompt.includes('weighed the queue against the direct call'))
+  check('carries the answer', prompt.includes('TypeScript 4.9 was released in November 2022'))
+  check('says the child wrote none when it wrote none', buildKeywordPrompt({ reasoning: '', content: '' }, 3).includes('(it wrote none)'))
   check('states the maximum', prompt.includes('at most 3 search terms'))
   check('says a term is not the claim', prompt.includes('never the claim itself'))
   check('allows fewer than the maximum', prompt.includes('Return fewer terms than the maximum'))

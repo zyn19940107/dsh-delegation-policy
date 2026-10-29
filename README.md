@@ -187,6 +187,45 @@ values are read when a delegated thought runs, not when the plugin starts, so a 
 effect on the next `think_deep` without a restart. The page writes into the same profile entry the
 YAML above configures: the two are the same values seen from two sides.
 
+## Making a judgement delegate
+
+The routing rules above are advice, and advice is what a model forgets under
+pressure. The plugin therefore makes the decision unavoidable.
+
+The agent classifies its own question. A `classify_question` tool asks it to
+state whether the question is a judgement — a recommendation, a comparison, a
+trade-off, a design, a risk analysis — and why. The plugin does not classify on
+its behalf: the agent read the question, so the agent classifies it.
+
+Then the plugin checks the answer rather than the intention. When the agent's
+answer is finished, the plugin looks at what the turn has established:
+
+- a turn that never classified is pulled back and told to classify first;
+- a turn classified as a judgement may not end before a delegated thought has
+  answered it.
+
+The pullback steers the agent back into the same turn, so the turn does not end
+until the rule is satisfied. A turn that refuses to classify a few times is let
+through: the gate is a rule, not a trap, and a model that cannot state its
+conclusion must still be able to answer.
+
+The classification belongs to the conversation that asked the question. The
+delegated children never see the tool: the thinking child, the extractor, the
+verifier and the search children all run without it.
+
+## The grounding pass reads the child's own work
+
+The extraction that names the search terms is not given the conclusion and the
+key points. It is given **the delegated child's own transcript** — the
+reasoning and the answer the child wrote — because that text is where the
+claims that need checking actually are. A fork child runs in the same process,
+so its stream is watched while it writes, and the extractor reads what it wrote.
+
+The extractor names terms and nothing else: it has no tool of its own, so it
+cannot answer the question it was asked about and cannot look anything up. The
+retrieval belongs to a separate child with a clean context, and the knowledge
+that comes back is what reaches the parent.
+
 ## The parent's only route to the web
 
 The guard refuses web_search, web_fetch and ead_page in the parent conversation. A delegated

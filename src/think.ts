@@ -25,6 +25,7 @@ import {
   type KeywordConfig,
 } from './keywords.js'
 import { buildConflictSearchPrompt, buildRefinePrompt, runVerifier } from './verify.js'
+import { trimTranscript, watchChildStream, type WatchedTranscript } from './watch.js'
 
 /** Provider that runs the thinking child. */
 export const DEFAULT_THINK_PROVIDER = 'fork'
@@ -66,6 +67,10 @@ export const THINK_DENY_CANDIDATES: readonly string[] = [
   'schedule_create', 'schedule_update', 'schedule_delete',
   'job_kill', 'present',
   'search_web', 'think_deep',
+  // The classification belongs to the conversation that asked the question. A
+  // child that classifies its own slice of the work would answer a question
+  // nobody asked it.
+  'classify_question',
 ]
 
 /**
@@ -161,6 +166,8 @@ export interface ThinkConfig {
   keywords: KeywordConfig
   /** Retrieval calls the grounding pass may make. */
   keywordSearchCalls: number
+  /** How much of the delegated child's transcript the extractor is given. */
+  watchMaxChars: number
   search: SearchConfig
 }
 
@@ -382,11 +389,15 @@ function denyFromRestrictionFailure(
  * @param ctx - the plugin context supplying the registries.
  * @param readConfig - the reader for the current thinking configuration.
  * @param budget - the budget that covers this route's children.
+ * @param onAnswered - called with the answering agent's session id once a
+ * delegated thought has produced a conclusion, so a turn that delegated can be
+ * recognised as one that did.
  */
 export function applyThinkTool(
   ctx: Context,
   readConfig: () => ThinkConfig,
   budget: ChildBudget,
+  onAnswered?: (sessionId: string) => void,
 ): void {
   const registered = readConfig()
   // The names this child accepts, learned from a restriction failure. The
@@ -547,7 +558,7 @@ export function applyThinkTool(
       // against the outside world, and a retrieval pass looks up exactly those.
       // The thinking child then reconsiders with that material beside its own
       // conclusion.
-      const runThinking = async (childPrompt: string): Promise<ThinkDeepOutput> => {
+      const runThinking = async (childPrompt: string): Promise<{ projected: ThinkDeepOutput, transcript: WatchedTranscript }> => {
         const base = {
           parent,
           prompt: [{ type: 'text', text: childPrompt }] as ContentBlock[],
@@ -574,32 +585,40 @@ export function applyThinkTool(
           )
         }
         registerChild(budget, run.id, config.maxChildCalls)
+        // Watch the child's own stream. A fork child runs in this process, so
+        // its reasoning and its answer can be watched as it writes them; the
+        // extractor is the child that turns that transcript into search terms.
+        const watcher = watchChildStream(run.localAgent)
         try {
-          return projectThinkResult(await run.result)
+          const projected = projectThinkResult(await run.result)
+          return { projected, transcript: watcher.transcript() }
         } finally {
+          watcher.stop()
           releaseChildBudget(budget, run.id)
           await run.dispose()
         }
       }
 
       let prompt = buildThinkChildPrompt(parsed.task, parsed.focus, config.maxChildCalls)
-      let projected = await runThinking(prompt)
+      const first = await runThinking(prompt)
+      let projected = first.projected
       let conclusion = projected.conclusion
       let keyPoints = projected.keyPoints
       let assumptions = projected.assumptions
       let risks = projected.risks
       let verification: ThinkVerification | undefined
 
-      // The grounding pass: what in this conclusion would have to be checked
-      // against an outside source, looked up before the conclusion is judged.
+      // The grounding pass: what in the delegated child's own work would have
+      // to be checked against an outside source, looked up before the
+      // conclusion is judged. The extractor reads the child's reasoning and
+      // answer — the text it wrote — and names the terms to look up.
       const extracted = await runKeywordExtractor(
         ctx,
         config.keywords,
         budget,
         parent,
         exec.signal,
-        conclusion,
-        keyPoints,
+        trimTranscript(first.transcript, config.watchMaxChars),
       )
       let keywordRetrieved: RetrievedKnowledge | undefined
       if (extracted.keywords.length > 0) {
@@ -622,10 +641,10 @@ export function applyThinkTool(
         const rethought = await runThinking(
           buildRethinkPrompt(parsed.task, conclusion, keyPoints, keywordRetrieved),
         )
-        conclusion = rethought.conclusion
-        keyPoints = rethought.keyPoints
-        assumptions = rethought.assumptions
-        risks = rethought.risks
+        conclusion = rethought.projected.conclusion
+        keyPoints = rethought.projected.keyPoints
+        assumptions = rethought.projected.assumptions
+        risks = rethought.projected.risks
       }
 
       let conflictRetrieved: RetrievedKnowledge | undefined
@@ -679,6 +698,10 @@ export function applyThinkTool(
           conflictRetrieved,
         )
       }
+
+      // The turn has been answered by a delegated thought, so a turn that was
+      // required to delegate has done what it was required to do.
+      onAnswered?.(parent.session.id)
 
       return {
         conclusion,

@@ -21,8 +21,16 @@
 
 import type { Context, Volatile } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
+import { createUserMessage } from '@deepseek-ai/dsh-llm'
 import type { PreToolDecision, ToolExecution } from '@deepseek-ai/dsh-tools'
+import {
+  applyClassifyTool,
+  JudgementGate,
+  NEEDS_CLASSIFICATION,
+  NEEDS_DELEGATION,
+} from './classify.js'
 import { checkChildBudget, createChildBudget, createWebGuard } from './guard.js'
+import { DEFAULT_WATCH_MAX_CHARS } from './watch.js'
 import {
   DEFAULT_KEYWORD_AGENT_PROVIDER,
   DEFAULT_KEYWORD_COUNT,
@@ -87,6 +95,11 @@ export const DELEGATION_GUIDANCE = [
   + 'material rather than from memory. It returns a structured conclusion with what was retrieved and a '
   + 'verification record.',
   '- subagent: a fresh subagent for a self-contained task that needs neither of the above.',
+  '- classify_question: state whether the question you are answering is a judgement — a recommendation, a '
+  + 'comparison, a trade-off, a design, a risk analysis, or a "what should we do" — and why. Call it before '
+  + 'you answer a question whose answer you are not sure how to settle: a judgement is answered by '
+  + 'delegating it to think_deep, and anything else is answered here. Your own conclusion decides the '
+  + 'route, so state the one you actually hold.',
   'These are the rules for delegation. Do not go looking for them elsewhere — not in a policy document, '
   + 'not in a README, not in this plugin\'s source: the tools are already in your tool table and the '
   + 'rules are already here.',
@@ -102,6 +115,23 @@ export const DELEGATION_GUIDANCE = [
   + 'the next step depends entirely on the result, or when delegating would break one continuous edit '
   + 'into fragments.',
 ].join('\n')
+
+/**
+ * Whether a turn must classify its question before it may end.
+ *
+ * On by default: a question that is a judgement is the case the delegation
+ * policy exists for, and a rule that has to be switched on to apply is a rule
+ * that is off.
+ */
+export const DEFAULT_JUDGEMENT_ENABLED = true
+
+/**
+ * How many times one turn may be pulled back before it is let through.
+ *
+ * The gate is a rule, not a trap. A model that will not state its conclusion
+ * is let through after this many pullbacks, so a turn can always end.
+ */
+export const DEFAULT_JUDGEMENT_MAX_PULLBACKS = 2
 
 /** Plugin config. */
 export interface Config {
@@ -141,6 +171,12 @@ export interface Config {
   keywordMaxCount: Volatile<number>
   /** Retrieval calls the grounding pass may make. */
   keywordSearchCalls: Volatile<number>
+  /** Whether a turn must classify its question before it may end. */
+  judgementEnabled: Volatile<boolean>
+  /** How many times one turn may be pulled back before it is let through. */
+  judgementMaxPullbacks: Volatile<number>
+  /** How much of the delegated child's transcript the extractor is given. */
+  watchMaxChars: Volatile<number>
 }
 
 export const Config = z.object({
@@ -161,7 +197,22 @@ export const Config = z.object({
   keywordModel: z.string().volatile(),
   keywordMaxCount: z.number().step(1).min(1).default(DEFAULT_KEYWORD_COUNT).volatile(),
   keywordSearchCalls: z.number().step(1).min(0).default(DEFAULT_KEYWORD_SEARCH_CALLS).volatile(),
+  judgementEnabled: z.boolean().default(DEFAULT_JUDGEMENT_ENABLED).volatile(),
+  judgementMaxPullbacks: z.number().step(1).min(1).default(DEFAULT_JUDGEMENT_MAX_PULLBACKS).volatile(),
+  watchMaxChars: z.number().step(1).min(1).default(DEFAULT_WATCH_MAX_CHARS).volatile(),
 })
+
+/**
+ * Write one line to the host's standard error.
+ *
+ * The harness's own logger is not captured by every host, so what the gate
+ * does is written where a host's stderr is always seen.
+ *
+ * @param line - the line to write.
+ */
+function log(line: string): void {
+  process.stderr.write(`${line}\n`)
+}
 
 /**
  * Register the delegation routes, the prompt guidance, and the rules enforced
@@ -188,10 +239,61 @@ export function apply(ctx: Context, config: Config): void {
 
   ctx.tools.guard(createWebGuard())
 
+  // The judgement gate. The agent states its own classification; the plugin
+  // makes the statement unavoidable by checking, at the point where the agent's
+  // answer is finished, that the answer classified its question and — when the
+  // question is a judgement — that a delegated thought answered it.
+  //
+  // The check runs on the assistant stream's closing frame rather than on the
+  // turn's end. A turn ends either because a tool result concluded it or
+  // because the agent simply answered, and only the second case is the one
+  // worth pulling back. A step that called a tool is mid-work, not finished,
+  // so the frame is ignored when the step used one.
+  const gate = new JudgementGate()
+  const tooledThisStep = new WeakMap<object, boolean>()
+  applyClassifyTool(ctx, gate)
+  ctx.on('agent/assistant-stream', (payload) => {
+    if (!config.judgementEnabled.get()) return
+    const frame = payload.frame
+    const agent = payload.agent
+    if (frame.type !== 'end') return
+    if (agent.session.header.origin === 'subagent') return
+    if (tooledThisStep.get(agent) === true) {
+      tooledThisStep.delete(agent)
+      return
+    }
+    const sessionId = agent.session.id
+    const state = gate.state(sessionId)
+    const missing = state.classified
+      ? (state.verdict && !state.delegated ? NEEDS_DELEGATION : undefined)
+      : NEEDS_CLASSIFICATION
+    if (missing === undefined) {
+      log(`delegation-policy: the answer of session ${sessionId} passed the judgement gate `
+        + `(classified=${state.classified}, judgement=${state.verdict}, delegated=${state.delegated})`)
+      gate.clear(sessionId)
+      return
+    }
+    const pullbacks = gate.pullback(sessionId)
+    log(`delegation-policy: the answer of session ${sessionId} was pulled back (${pullbacks}): `
+      + (missing === NEEDS_CLASSIFICATION ? 'no classification' : 'no delegated thought'))
+    if (pullbacks > config.judgementMaxPullbacks.get()) {
+      // A turn that keeps refusing to classify is let through: the gate is a
+      // rule, not a trap, and a model that cannot state its conclusion must
+      // still be able to answer.
+      gate.clear(sessionId)
+      return
+    }
+    agent.steer(createUserMessage({
+      content: [{ type: 'text', text: missing }],
+      source: { kind: 'system-prompt' },
+    }))
+  })
+
   ctx.on('tools/pre-execute', async (
     exec: ToolExecution,
     next,
   ): Promise<PreToolDecision> => {
+    if (exec.agent !== undefined) tooledThisStep.set(exec.agent, true)
     const denial = checkChildBudget(budget, exec)
     if (denial !== undefined) return { kind: 'deny', reason: denial }
     return next()
@@ -223,6 +325,7 @@ export function apply(ctx: Context, config: Config): void {
       maxChildCalls: config.maxChildCalls.get(),
     },
     keywordSearchCalls: config.keywordSearchCalls.get(),
+    watchMaxChars: config.watchMaxChars.get(),
     search: {
       provider: config.searchProvider.get(),
       maxSources: config.maxSources.get(),
@@ -230,5 +333,5 @@ export function apply(ctx: Context, config: Config): void {
       maxChildCalls: config.maxChildCalls.get(),
       timeoutMs: config.searchTimeoutMs.get(),
     },
-  }), budget)
+  }), budget, (sessionId) => { gate.markDelegated(sessionId) })
 }

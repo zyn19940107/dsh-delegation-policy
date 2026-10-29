@@ -9,11 +9,12 @@
  */
 
 import type {} from '@deepseek-ai/dsh-client-ui-plugin-manager/client'
-import { SettingsForm, SettingsValueField, Tag } from '@deepseek-ai/dsh-client-ui-primitives'
+import { SettingsForm, SettingsValueField, Switch, Tag } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { PropsLocale, PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
 import { useEffect, useState } from 'react'
 import {
   COUNT_FIELD,
+  JUDGEMENT_FIELD,
   MODEL_FIELD,
   PROVIDER_FIELD,
   type DelegationCardController,
@@ -77,6 +78,18 @@ export function DelegationSettingsCard(props: DelegationSettingsCardProps) {
         onEdit={(text) => { actions.edit(COUNT_FIELD, text) }}
         onReset={() => { actions.resetField(COUNT_FIELD) }}
       />
+      <div className={styles.field}>
+        <div className={styles.head}>
+          <span className={styles.label}>{t('judgementLabel')}</span>
+        </div>
+        <Switch
+          label={t('judgementLabel')}
+          checked={state.judgementEnabled.text === 'on'}
+          disabled={!state.writable}
+          onChange={(checked) => { actions.edit(JUDGEMENT_FIELD, checked ? 'on' : 'off') }}
+        />
+        <p className={styles.hint}>{t('judgementHint')}</p>
+      </div>
     </SettingsForm>
   )
 }

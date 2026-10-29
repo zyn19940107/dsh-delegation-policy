@@ -27,3 +27,5 @@
         keywordAgentProvider: spawn
         keywordMaxCount: 3
         keywordSearchCalls: 3
+        judgementEnabled: true
+        judgementMaxPullbacks: 2
