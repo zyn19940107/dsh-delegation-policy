@@ -87,16 +87,18 @@ whole implementation task as one continuous edit and reasoned through the geomet
 its model of the part three times before the user pointed out that the direction was wrong. The
 guidance now says so explicitly, and a spec keeps the wording from being narrowed back.
 
-## The pipeline: reason, verify, look up the contradiction
+## The pipeline: reason, ground, verify
 
 ```
 think_deep(task, focus, verify?)
   └─ fork#1  reasons over this conversation → conclusion
-       └─ spawn#1  tries to refute the conclusion      → confirmed | conflict
-            └─ on conflict: spawn#2 looks up ONLY the disputed points
-                 └─ fork#3 revises the conclusion with what that search found
-                      └─ spawn#3 reviews the revision
-  returns the conclusion, what the disputed-points search found, and the verification record
+       └─ spawn#1  names the terms that would have to be checked → keyword terms
+            └─ spawn#2  looks up ONLY those terms
+                 └─ fork#2 revises the conclusion with what that search found
+                      └─ spawn#3 refutes the conclusion  → confirmed | conflict
+                           └─ on conflict: spawn#4 looks up ONLY the disputed points
+                                └─ fork#3 revises, and spawn#5 reviews the revision
+  returns the conclusion, the terms that were checked, what the lookup found, and the verification record
 ```
 
 **The pipeline does not retrieve the subject.** The thinking child is a fork: it inherits this
@@ -105,11 +107,12 @@ same material twice and put a second corpus in the prompt that the parent never 
 knowledge enters through the parent's `search_web`, which is the one route to the web from this
 conversation.
 
-The one retrieval inside the pipeline is aimed at a verifier's objections, not at the subject: the
-problems a verifier reports name the exact parts of a conclusion it cannot support, and looking those
-up is what can change the answer. The child is told that "the record does not settle this" is a
-valid result, because a contradiction the sources cannot resolve has to be reported rather than
-argued away.
+The one retrieval inside the pipeline is aimed at **what the conclusion rests on**, not at the subject:
+the extractor names the terms that a reader would have to check before relying on the conclusion, and
+the lookup covers those terms and nothing else. The extractor is a separate child with its own model,
+because naming the terms is a different job from reasoning about them — and a cheap model can do it.
+The child is told that "the record does not settle this" is a valid result, because a contradiction the
+sources cannot resolve has to be reported rather than argued away.
 
 ## Verification: a second child that refutes the conclusion
 
@@ -160,8 +163,26 @@ question, or set `verifyRounds: 0` in the configuration to turn the pass off ent
 | `verifyRounds` | `2` | verification passes a delegated thought may run |
 | `verifyProvider` | `spawn` | provider that runs the verifier |
 | `verifyTimeoutMs` | `600000` | budget for one verification pass |
-| `retrieveFirst` | `true` | whether a delegated thought retrieves before it reasons |
-| `retrieveMaxChildCalls` | `3` | retrieval calls the retrieving child may make |
+| `conflictSearchCalls` | `2` | retrieval calls the conflict lookup may make |
+| `keywordAgentProvider` | `spawn` | provider that runs the keyword extractor |
+| `keywordModel` | *(unset)* | model the keyword extractor runs on; the parent's when unset |
+| `keywordModelProvider` | *(unset)* | llm provider the extractor's model belongs to |
+| `keywordMaxCount` | `3` | how many terms the extractor may name |
+| `keywordSearchCalls` | `3` | retrieval calls the term lookup may make |
+
+## The settings page
+
+The plugin ships its own page on the Plugins page, under its bundle's row (**委派策略** /
+**Delegation policy**). It edits two things the plugin cannot decide for itself:
+
+- **the model the keyword extractor runs on**, chosen from the models this deployment can actually
+  route to, so the setting cannot name a model that does not exist; leaving it empty keeps the
+  extractor's model equal to the conversation's own;
+- **how many terms the extractor may name** for one delegated thought.
+
+Both are read when a delegated thought runs, not when the plugin starts, so a change takes effect on
+the next `think_deep` without a restart. The page writes into the same profile entry the YAML above
+configures: the two are the same values seen from two sides.
 
 ## The parent's only route to the web
 
@@ -230,10 +251,12 @@ wall-clock time.
 ```
 src/index.ts     entry: registers both tools, the guard, the budget, the prompt section
 src/search.ts    search_web: spawn child, budgeted retrieval, projection
-src/think.ts     think_deep: fork child, tool restriction, verification loop, projection
+src/think.ts     think_deep: fork child, tool restriction, extraction, verification, projection
+src/keywords.ts  the keyword extractor: the terms a conclusion would have to be checked against
 src/verify.ts    the verifier: adversarial review of a conclusion, and the revision it triggers
 src/project.ts   pure projections from a child's result to the parent's view
 src/guard.ts     the execution-point rules: the search guard, the retrieval budget
+src/client/      the settings page: the browser half, on the Plugins page's row
 verify/          specs and session-log readers
 ```
 
@@ -245,13 +268,18 @@ reports the tools an agent was offered, the calls it made, and what its final me
 
 ```sh
 pnpm install        # install dependencies and build
-pnpm run build      # bundle src/index.ts to lib/index.js
-pnpm run typecheck  # tsc --noEmit
+pnpm run build      # bundle src/index.ts to lib/index.js and src/client to lib/client.js
+pnpm run typecheck  # tsc --noEmit, both faces
 node verify/run-specs.mjs
 ```
 
 The specs cover the projections, including the case this plugin exists to survive: a child that
 answers in prose while the driver reports an error.
+
+The browser half is a separate artifact: the browser loads a client bundle as a classic script that
+registers itself with the module loader, so `lib/client.js` is CommonJS wrapped in the loader's
+registration call. Only `react` and `react/jsx-runtime` stay external — the browser's module table
+already carries them, and a second copy of React would break the hooks.
 
 ## License
 

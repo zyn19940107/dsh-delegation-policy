@@ -197,15 +197,15 @@ export function apply(ctx: Context, config: Config): void {
     return next()
   })
 
-  applySearchTool(ctx, {
+  applySearchTool(ctx, () => ({
     provider: config.searchProvider.get(),
     maxSources: config.maxSources.get(),
     maxSnippetChars: config.maxSnippetChars.get(),
     maxChildCalls: config.maxChildCalls.get(),
     timeoutMs: config.searchTimeoutMs.get(),
-  }, budget)
+  }), budget)
 
-  applyThinkTool(ctx, {
+  applyThinkTool(ctx, () => ({
     provider: config.thinkProvider.get(),
     maxChildCalls: config.maxThinkCalls.get(),
     timeoutMs: config.thinkTimeoutMs.get(),
@@ -230,5 +230,5 @@ export function apply(ctx: Context, config: Config): void {
       maxChildCalls: config.maxChildCalls.get(),
       timeoutMs: config.searchTimeoutMs.get(),
     },
-  }, budget)
+  }), budget)
 }

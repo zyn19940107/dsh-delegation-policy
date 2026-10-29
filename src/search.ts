@@ -233,16 +233,21 @@ export async function delegateSearch(
 /**
  * Register the `search_web` tool.
  *
+ * The configuration is read when a call runs, not when the tool is registered:
+ * the settings page writes the plugin's limits at runtime, and the next
+ * delegated search must use what the page last saved.
+ *
  * @param ctx - the plugin context supplying the registries.
- * @param config - the resolved search configuration.
+ * @param readConfig - the reader for the current search configuration.
  * @param budget - the budget that covers this route's children.
  * @returns the budget, so the caller can release children against it.
  */
 export function applySearchTool(
   ctx: Context,
-  config: SearchConfig,
+  readConfig: () => SearchConfig,
   budget: ChildBudget,
 ): void {
+  const registered = readConfig()
   ctx.tools.register(defineTool({
     name: 'search_web',
     description: 'Search the web for current information. Use it for any fact that lives outside this '
@@ -261,7 +266,7 @@ export function applySearchTool(
       },
       maxSources: {
         type: 'number',
-        description: `How many sources to return; at most ${config.maxSources}.`,
+        description: `How many sources to return; at most ${registered.maxSources}.`,
       },
     },
     output: {
@@ -291,8 +296,9 @@ export function applySearchTool(
     },
     // A delegated search is a foreground operation on the parent's behalf.
     isConcurrencySafe: () => false,
-    timeoutMs: config.timeoutMs,
+    timeoutMs: registered.timeoutMs,
     async execute(args, exec) {
+      const config = readConfig()
       const parsed = parseSearchWebArgs(args as SearchWebArgs, config.maxSources)
       const parent = exec.agent
       if (parent === undefined) {

@@ -375,15 +375,20 @@ function denyFromRestrictionFailure(
 /**
  * Register the `think_deep` tool.
  *
+ * The configuration is read when a call runs, not when the tool is registered:
+ * the settings page writes the extractor's model and term count at runtime,
+ * and the next delegated thought must use what the page last saved.
+ *
  * @param ctx - the plugin context supplying the registries.
- * @param config - the resolved thinking configuration.
+ * @param readConfig - the reader for the current thinking configuration.
  * @param budget - the budget that covers this route's children.
  */
 export function applyThinkTool(
   ctx: Context,
-  config: ThinkConfig,
+  readConfig: () => ThinkConfig,
   budget: ChildBudget,
 ): void {
+  const registered = readConfig()
   // The names this child accepts, learned from a restriction failure. The
   // child's scope cannot be derived before the spawn, and the failure names
   // every tool the child accepts.
@@ -495,10 +500,11 @@ export function applyThinkTool(
     // thinking child, then a verifier per round, and a retrieval pass aimed at
     // the contradictions whenever a verifier found any.
     isConcurrencySafe: () => false,
-    timeoutMs: config.timeoutMs
-      + config.verifyTimeoutMs * Math.max(1, config.verifyRounds)
-      + (config.conflictSearchCalls > 0 ? config.search.timeoutMs : 0),
+    timeoutMs: registered.timeoutMs
+      + registered.verifyTimeoutMs * Math.max(1, registered.verifyRounds)
+      + (registered.conflictSearchCalls > 0 ? registered.search.timeoutMs : 0),
     async execute(args, exec) {
+      const config = readConfig()
       const parsed = parseThinkDeepArgs(args as ThinkDeepArgs)
       const parent = exec.agent
       if (parent === undefined) {
