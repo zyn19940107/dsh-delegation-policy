@@ -24,6 +24,11 @@ import z from '@deepseek-ai/schemastery'
 import type { PreToolDecision, ToolExecution } from '@deepseek-ai/dsh-tools'
 import { checkChildBudget, createChildBudget, createWebGuard } from './guard.js'
 import {
+  DEFAULT_KEYWORD_AGENT_PROVIDER,
+  DEFAULT_KEYWORD_COUNT,
+  DEFAULT_KEYWORD_SEARCH_CALLS,
+} from './keywords.js'
+import {
   applySearchTool,
   DEFAULT_MAX_CHILD_CALLS,
   DEFAULT_MAX_SNIPPET_CHARS,
@@ -126,6 +131,16 @@ export interface Config {
   retrieveFirst: Volatile<boolean>
   /** Retrieval calls a pass aimed at the contradictions may make. */
   conflictSearchCalls: Volatile<number>
+  /** The extractor that names what a conclusion would have to be checked against. */
+  keywordAgentProvider: Volatile<string>
+  /** The model provider the extractor runs on; the parent's when unset. */
+  keywordModelProvider: Volatile<string | undefined>
+  /** The model the extractor runs on; the parent's when unset. */
+  keywordModel: Volatile<string | undefined>
+  /** How many search terms the extractor may name. */
+  keywordMaxCount: Volatile<number>
+  /** Retrieval calls the grounding pass may make. */
+  keywordSearchCalls: Volatile<number>
 }
 
 export const Config = z.object({
@@ -141,6 +156,11 @@ export const Config = z.object({
   verifyProvider: z.string().default(DEFAULT_VERIFY_PROVIDER).volatile(),
   verifyTimeoutMs: z.number().step(1).min(1).default(DEFAULT_VERIFY_TIMEOUT_MS).volatile(),
   conflictSearchCalls: z.number().step(1).min(0).default(DEFAULT_CONFLICT_SEARCH_CALLS).volatile(),
+  keywordAgentProvider: z.string().default(DEFAULT_KEYWORD_AGENT_PROVIDER).volatile(),
+  keywordModelProvider: z.string().volatile(),
+  keywordModel: z.string().volatile(),
+  keywordMaxCount: z.number().step(1).min(1).default(DEFAULT_KEYWORD_COUNT).volatile(),
+  keywordSearchCalls: z.number().step(1).min(0).default(DEFAULT_KEYWORD_SEARCH_CALLS).volatile(),
 })
 
 /**
@@ -193,6 +213,16 @@ export function apply(ctx: Context, config: Config): void {
     verifyProvider: config.verifyProvider.get(),
     verifyTimeoutMs: config.verifyTimeoutMs.get(),
     conflictSearchCalls: config.conflictSearchCalls.get(),
+    keywords: {
+      agentProvider: config.keywordAgentProvider.get(),
+      ...config.keywordModelProvider.get() === undefined
+        ? {}
+        : { modelProvider: config.keywordModelProvider.get() },
+      ...config.keywordModel.get() === undefined ? {} : { model: config.keywordModel.get() },
+      maxKeywords: config.keywordMaxCount.get(),
+      maxChildCalls: config.maxChildCalls.get(),
+    },
+    keywordSearchCalls: config.keywordSearchCalls.get(),
     search: {
       provider: config.searchProvider.get(),
       maxSources: config.maxSources.get(),

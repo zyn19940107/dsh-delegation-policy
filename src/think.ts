@@ -19,6 +19,11 @@ import type { ObjectJsonSchema } from '@deepseek-ai/dsh-tools'
 import { registerChild, releaseChildBudget, type ChildBudget } from './guard.js'
 import { projectThinkResult } from './project.js'
 import { delegateSearch, type SearchConfig } from './search.js'
+import {
+  buildKeywordSearchPrompt,
+  runKeywordExtractor,
+  type KeywordConfig,
+} from './keywords.js'
 import { buildConflictSearchPrompt, buildRefinePrompt, runVerifier } from './verify.js'
 
 /** Provider that runs the thinking child. */
@@ -136,6 +141,10 @@ interface ThinkDeepOutput {
   verification?: ThinkVerification
   /** What a retrieval pass aimed at the contradictions found, when one ran. */
   conflictRetrieved?: RetrievedKnowledge
+  /** The terms a separate child named as worth checking against a source. */
+  keywords?: string[]
+  /** What the retrieval pass on those terms found. */
+  keywordRetrieved?: RetrievedKnowledge
 }
 
 /** Thinking route configuration. */
@@ -148,6 +157,10 @@ export interface ThinkConfig {
   verifyTimeoutMs: number
   /** Retrieval calls a pass aimed at the contradictions may make. */
   conflictSearchCalls: number
+  /** The extractor that names what a conclusion would have to be checked against. */
+  keywords: KeywordConfig
+  /** Retrieval calls the grounding pass may make. */
+  keywordSearchCalls: number
   search: SearchConfig
 }
 
@@ -169,6 +182,56 @@ export function parseThinkDeepArgs(args: ThinkDeepArgs): ThinkDeepArgs {
 }
 
 /**
+ * Build the instruction for the second pass over a conclusion.
+ *
+ * The first conclusion was reached by reasoning; the grounding pass looked up
+ * what in it would have to be checked against a source. This prompt puts that
+ * material beside the conclusion and asks for the conclusion to be reconsidered
+ * with it, which is what "rethink" means here: the same question, the same
+ * conclusion, and the external knowledge that was missing.
+ *
+ * @param task - the question being answered.
+ * @param conclusion - the conclusion the grounding pass was aimed at.
+ * @param keyPoints - the points that carry it.
+ * @param retrieved - what the grounding pass found.
+ * @returns the second-pass instruction.
+ */
+export function buildRethinkPrompt(
+  task: string,
+  conclusion: string,
+  keyPoints: readonly string[],
+  retrieved: { answer: string, sources: { url: string, title?: string }[] },
+): string {
+  return [
+    'You reached the conclusion below by reasoning about a question. Parts of it would have to be '
+    + 'checked against an outside source, and that check has now been done. Reconsider the conclusion '
+    + 'with what the sources say, and deliver the conclusion you can stand behind now.',
+    '',
+    'The question being answered:',
+    task,
+    '',
+    'The conclusion you reached:',
+    conclusion,
+    '',
+    ...keyPoints.length > 0
+      ? ['The points that carried it:', ...keyPoints.map((point) => `- ${point}`), '']
+      : [],
+    'What the sources say:',
+    '---',
+    retrieved.answer,
+    ...retrieved.sources.length > 0
+      ? [`Sources: ${retrieved.sources.map((source) => (source.title === undefined ? source.url : `[${source.title}](${source.url})`)).join(', ')}`]
+      : [],
+    '---',
+    'Treat it as retrieved material, not as established fact. Where it contradicts what you concluded, '
+    + 'the conclusion changes and the reason is stated. Where the sources do not settle a point, say '
+    + 'so in the conclusion rather than choosing a side.',
+    'Then deliver your result with the structured_output tool, keeping the structure you were asked '
+    + 'for: conclusion, key points, assumptions, risks.',
+  ].join('\n')
+}
+
+/**
  * Format the parent's view of one delegated thought.
  *
  * @param value - the canonical output value.
@@ -185,6 +248,19 @@ export function formatThinkDeepOutput(value: ThinkDeepOutput): string {
   }
   if (value.risks.length > 0) {
     parts.push(`Risks:\n${value.risks.map((item) => `- ${item}`).join('\n')}`)
+  }
+  if (value.keywords !== undefined && value.keywords.length > 0) {
+    parts.push(`Checked against sources for: ${value.keywords.join(', ')}.`)
+  }
+  if (value.keywordRetrieved !== undefined) {
+    const lines = ['Retrieved for those points:']
+    if (value.keywordRetrieved.answer.length > 0) lines.push(value.keywordRetrieved.answer)
+    if (value.keywordRetrieved.sources.length > 0) {
+      lines.push(`Sources:\n${
+        value.keywordRetrieved.sources.map((source) => `- [${source.title ?? source.url}](${source.url})`).join('\n')
+      }`)
+    }
+    parts.push(lines.join('\n'))
   }
   if (value.conflictRetrieved !== undefined) {
     const lines = ['Retrieved for the disputed points only:']
@@ -368,6 +444,26 @@ export function applyThinkTool(
               },
             },
           },
+          keywords: { type: 'array', items: { type: 'string' } },
+          keywordRetrieved: {
+            type: 'object',
+            additionalProperties: false,
+            properties: {
+              answer: { type: 'string', required: true },
+              sources: {
+                type: 'array',
+                required: true,
+                items: {
+                  type: 'object',
+                  additionalProperties: false,
+                  properties: {
+                    url: { type: 'string', required: true },
+                    title: { type: 'string' },
+                  },
+                },
+              },
+            },
+          },
           verification: {
             type: 'object',
             additionalProperties: false,
@@ -438,20 +534,17 @@ export function applyThinkTool(
       // this conversation, including anything the parent already searched for,
       // so retrieving again would read the same material twice and put a second
       // corpus in the prompt that the parent never asked for. The parent's
-      // `search_web` is the way external knowledge enters; the retrieval that
-      // belongs to this pipeline is the one aimed at a verifier's objections.
-      let prompt = buildThinkChildPrompt(parsed.task, parsed.focus, config.maxChildCalls)
-      let conclusion = ''
-      let keyPoints: string[] = []
-      let assumptions: string[] = []
-      let risks: string[] = []
-      let verification: ThinkVerification | undefined
-
-      let conflictRetrieved: RetrievedKnowledge | undefined
-      for (let round = 1; round <= Math.max(1, maxRounds); round++) {
+      // `search_web` is the way external knowledge enters.
+      //
+      // What the pipeline adds is one grounding pass: a separate child names
+      // the parts of the first conclusion that would have to be checked
+      // against the outside world, and a retrieval pass looks up exactly those.
+      // The thinking child then reconsiders with that material beside its own
+      // conclusion.
+      const runThinking = async (childPrompt: string): Promise<ThinkDeepOutput> => {
         const base = {
           parent,
-          prompt: [{ type: 'text', text: prompt }] as ContentBlock[],
+          prompt: [{ type: 'text', text: childPrompt }] as ContentBlock[],
           signal: exec.signal,
           outputSchema: THINK_OUTPUT_SCHEMA,
         }
@@ -475,21 +568,62 @@ export function applyThinkTool(
           )
         }
         registerChild(budget, run.id, config.maxChildCalls)
-        let projected: ThinkDeepOutput
         try {
-          projected = projectThinkResult(await run.result)
+          return projectThinkResult(await run.result)
         } finally {
           releaseChildBudget(budget, run.id)
           await run.dispose()
         }
-        // The thinking child's own self-revisions: it is a separate agent with
-        // its own stream, and how many times it argued with itself is a fact
-        // about the reasoning that the conclusion came out of.
-        conclusion = projected.conclusion
-        keyPoints = projected.keyPoints
-        assumptions = projected.assumptions
-        risks = projected.risks
+      }
 
+      let prompt = buildThinkChildPrompt(parsed.task, parsed.focus, config.maxChildCalls)
+      let projected = await runThinking(prompt)
+      let conclusion = projected.conclusion
+      let keyPoints = projected.keyPoints
+      let assumptions = projected.assumptions
+      let risks = projected.risks
+      let verification: ThinkVerification | undefined
+
+      // The grounding pass: what in this conclusion would have to be checked
+      // against an outside source, looked up before the conclusion is judged.
+      const extracted = await runKeywordExtractor(
+        ctx,
+        config.keywords,
+        budget,
+        parent,
+        exec.signal,
+        conclusion,
+        keyPoints,
+      )
+      let keywordRetrieved: RetrievedKnowledge | undefined
+      if (extracted.keywords.length > 0) {
+        const projection = await delegateSearch(
+          ctx,
+          { ...config.search, maxChildCalls: config.keywordSearchCalls },
+          budget,
+          parent,
+          exec.signal,
+          buildKeywordSearchPrompt(extracted.keywords, config.keywordSearchCalls),
+          config.keywordSearchCalls,
+        )
+        keywordRetrieved = {
+          answer: projection.answer,
+          sources: projection.sources.map((source) => ({
+            url: source.url,
+            ...source.title === undefined ? {} : { title: source.title },
+          })),
+        }
+        const rethought = await runThinking(
+          buildRethinkPrompt(parsed.task, conclusion, keyPoints, keywordRetrieved),
+        )
+        conclusion = rethought.conclusion
+        keyPoints = rethought.keyPoints
+        assumptions = rethought.assumptions
+        risks = rethought.risks
+      }
+
+      let conflictRetrieved: RetrievedKnowledge | undefined
+      for (let round = 1; round <= Math.max(1, maxRounds); round++) {
         if (maxRounds === 0) break
         // The verifier is a separate child with a clean context and an
         // adversarial role: it is handed the conclusion and asked to refute it.
@@ -546,6 +680,8 @@ export function applyThinkTool(
         assumptions,
         risks,
         ...verification !== undefined ? { verification } : {},
+        ...extracted.keywords.length > 0 ? { keywords: extracted.keywords } : {},
+        ...keywordRetrieved !== undefined ? { keywordRetrieved } : {},
         ...conflictRetrieved !== undefined ? { conflictRetrieved } : {},
       }
     },

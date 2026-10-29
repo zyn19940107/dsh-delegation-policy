@@ -24,3 +24,6 @@
         verifyProvider: spawn
         verifyTimeoutMs: 600000
         conflictSearchCalls: 2
+        keywordAgentProvider: spawn
+        keywordMaxCount: 3
+        keywordSearchCalls: 3
