@@ -5,7 +5,7 @@ import type { SettingsFormLabels } from '@deepseek-ai/dsh-client-ui-primitives'
 /** Locale keys the page renders. */
 export type DelegationSettingsLocaleKey =
   | 'title' | 'summary'
-  | 'modelLabel' | 'modelHint'
+  | 'modelLabel' | 'modelHint' | 'modelInherit'
   | 'countLabel' | 'countHint'
   | 'overridden' | 'reset' | 'readOnly' | 'unavailable'
   | 'save' | 'saving' | 'saveFailed' | 'invalidNumber'
@@ -15,7 +15,8 @@ export const en: Record<DelegationSettingsLocaleKey, string> = {
   title: 'Delegation policy',
   summary: 'Route external facts and long reasoning to delegated children.',
   modelLabel: 'Keyword extractor model',
-  modelHint: 'Leave empty to use the model this conversation runs on.',
+  modelHint: 'The model that names the terms a conclusion would have to be checked against. Leave empty to use the model this conversation runs on.',
+  modelInherit: 'Same model as this conversation',
   countLabel: 'Max search terms per thought',
   countHint: 'How many terms the extractor may name for one delegated thought.',
   overridden: 'Overridden',
@@ -33,7 +34,8 @@ export const zh: Record<DelegationSettingsLocaleKey, string> = {
   title: '委派策略',
   summary: '把外部事实和长推理交给被委派的子代理。',
   modelLabel: '关键词提取器使用的模型',
-  modelHint: '留空则使用本次对话所用的模型。',
+  modelHint: '用来命名「结论需要核实哪些词」的模型。留空则使用本次对话所用的模型。',
+  modelInherit: '与本次对话相同的模型',
   countLabel: '每次思考最多提取的名词概念数',
   countHint: '一次委派思考中，提取器最多可以命名多少个检索词。',
   overridden: '已覆盖',

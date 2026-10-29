@@ -22,7 +22,12 @@ import type {} from '@deepseek-ai/dsh-client-ui-plugin-manager/client'
 // Type-only: the ctx.slots Context merge.
 import type {} from '@deepseek-ai/dsh-client-ui-renderer/client'
 import { DelegationSettingsCard } from './DelegationSettingsCard.js'
-import { DelegationModelCatalog } from './delegation-model-catalog.js'
+import {
+  DelegationCardController,
+  DelegationModelCatalog,
+  type DelegationSettings,
+} from './delegation-card-controller.js'
+import { injectStyles } from './delegation-styles.js'
 import { en, zh, type DelegationSettingsLocaleKey } from './locales.js'
 
 declare module '@deepseek-ai/dsh-client-ui-slots' {
@@ -60,14 +65,19 @@ export const inject = ['slots', 'locale', 'remote', 'remote.session', 'configFor
  */
 export function apply(ctx: ClientContext): void {
   ctx.effect(() => ctx.locale.register(NS, { zh, en }), 'dsh-delegation-policy: dictionaries')
+  injectStyles()
   const catalog = new DelegationModelCatalog(ctx)
-  ctx.effect(() => () => { catalog.dispose() }, 'dsh-delegation-policy: model catalog')
+  const controller = new DelegationCardController(
+    ctx.configForms.get<DelegationSettings>(DELEGATION_NS),
+    catalog,
+  )
+  ctx.effect(() => () => { controller.dispose() }, 'dsh-delegation-policy: form')
   ctx.effect(
     () => ctx.configForms.whileServed([DELEGATION_NS], () => ctx.slots.register({
       name: 'plugins.row.config',
       key: ROW_KEY,
       locale: NS,
-    }, props => <DelegationSettingsCard {...props} catalog={catalog} />)),
+    }, props => <DelegationSettingsCard {...props} controller={controller} />)),
     'dsh-delegation-policy: page',
   )
 }

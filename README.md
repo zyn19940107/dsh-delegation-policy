@@ -177,12 +177,15 @@ The plugin ships its own page on the Plugins page, under its bundle's row (**委
 
 - **the model the keyword extractor runs on**, chosen from the models this deployment can actually
   route to, so the setting cannot name a model that does not exist; leaving it empty keeps the
-  extractor's model equal to the conversation's own;
+  extractor's model equal to the conversation's own. The models are grouped by the provider that
+  serves them, and choosing one writes the provider with it — a model id is only reachable through
+  the route that serves it.
 - **how many terms the extractor may name** for one delegated thought.
 
-Both are read when a delegated thought runs, not when the plugin starts, so a change takes effect on
-the next `think_deep` without a restart. The page writes into the same profile entry the YAML above
-configures: the two are the same values seen from two sides.
+The page stages what you change and writes it when you save, like every other settings page. Both
+values are read when a delegated thought runs, not when the plugin starts, so a saved change takes
+effect on the next `think_deep` without a restart. The page writes into the same profile entry the
+YAML above configures: the two are the same values seen from two sides.
 
 ## The parent's only route to the web
 

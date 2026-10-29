@@ -9,111 +9,167 @@
  */
 
 import type {} from '@deepseek-ai/dsh-client-ui-plugin-manager/client'
+import { SettingsForm, SettingsValueField, Tag } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { PropsLocale, PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
 import { useEffect, useState } from 'react'
-import type { DelegationModelCatalog, DelegationModelGroup } from './delegation-model-catalog.js'
-
-/** Field the extractor's model is written to. */
-const MODEL_FIELD = 'keywordModel'
-
-/** Field the extractor's model provider is written to. */
-const PROVIDER_FIELD = 'keywordModelProvider'
-
-/** Field the extractor's term count is written to. */
-const COUNT_FIELD = 'keywordMaxCount'
+import {
+  COUNT_FIELD,
+  MODEL_FIELD,
+  PROVIDER_FIELD,
+  type DelegationCardController,
+  type DelegationCardState,
+} from './delegation-card-controller.js'
+import { styles } from './delegation-styles.js'
+import { formLabels } from './locales.js'
 
 /** Props the renderer binds for the delegation page. */
 export type DelegationSettingsCardProps =
   PropsRuntime<'plugins.row.config'>
   & PropsLocale<'settings.delegationPolicy'>
   & {
-    /** The models this deployment can route to. */
-    readonly catalog: DelegationModelCatalog
+    /** The page's staged form and the models this deployment can route to. */
+    readonly controller: DelegationCardController
   }
 
 /**
  * Render the delegation policy's one-liner or its settings form, as the
  * Plugins page asks.
  *
- * @param props - the view asked for, locale copy, the Host-owned form, and the model catalog.
+ * @param props - the view asked for, locale copy, and the page's form.
  * @returns the one-liner, or the form.
  */
 export function DelegationSettingsCard(props: DelegationSettingsCardProps) {
   const { t } = props
-  const form = props.form
-  const groups = useModelGroups(props.catalog)
+  const state = useCardState(props.controller)
   if (props.view === 'summary') return t('summary')
-  const value = form?.state.value as Record<string, unknown> | undefined
-  const model = typeof value?.[MODEL_FIELD] === 'string' ? value[MODEL_FIELD] as string : ''
-  const count = typeof value?.[COUNT_FIELD] === 'number' ? String(value[COUNT_FIELD]) : ''
-  const disabled = form === undefined || !form.state.writable
-  const set = (field: string, next: unknown): void => {
-    void form?.mutate([{ op: 'set', path: [field], value: next as never }])
-  }
-  const unset = (field: string): void => {
-    void form?.mutate([{ op: 'unset', path: [field] }])
-  }
+  const actions = props.controller.actions()
   return (
-    <div>
-      <label htmlFor="plugin-config-delegation-keyword-model">{t('modelLabel')}</label>
-      <select
+    <SettingsForm
+      labels={formLabels(t)}
+      state={state}
+      onSave={actions.save}
+      onDiscard={actions.discard}
+    >
+      <ModelField
         id="plugin-config-delegation-keyword-model"
-        value={model}
+        label={t('modelLabel')}
+        hint={t('modelHint')}
+        inheritLabel={t('modelInherit')}
+        overriddenLabel={t('overridden')}
+        resetLabel={t('reset')}
+        state={state}
+        onEdit={actions.edit}
+        onReset={() => {
+          actions.edit(MODEL_FIELD, '')
+          actions.edit(PROVIDER_FIELD, '')
+        }}
+      />
+      <SettingsValueField
+        id="plugin-config-delegation-keyword-count"
+        label={t('countLabel')}
+        hint={t('countHint')}
+        overriddenLabel={t('overridden')}
+        resetLabel={t('reset')}
+        invalidLabel={t('invalidNumber')}
+        numeric
+        disabled={!state.writable}
+        {...state.keywordMaxCount}
+        onEdit={(text) => { actions.edit(COUNT_FIELD, text) }}
+        onReset={() => { actions.resetField(COUNT_FIELD) }}
+      />
+    </SettingsForm>
+  )
+}
+
+/** What the model control needs. */
+interface ModelFieldProps {
+  /** Stable id associating the label with its control. */
+  readonly id: string
+  /** Visible label. */
+  readonly label: string
+  /** One-line explanation rendered under the control. */
+  readonly hint: string
+  /** Copy for the choice that inherits the conversation's model. */
+  readonly inheritLabel: string
+  /** Copy for the overridden badge. */
+  readonly overriddenLabel: string
+  /** Copy for the reset control. */
+  readonly resetLabel: string
+  /** The page's current state. */
+  readonly state: DelegationCardState
+  /** Stage draft text for one field. */
+  readonly onEdit: (field: string, text: string) => void
+  /** Stage a clear for the model and the provider with it. */
+  readonly onReset: () => void
+}
+
+/**
+ * The model control: a list of the deployment's routable models, grouped by
+ * the provider that serves them, plus the empty choice that means "the same
+ * model this conversation runs on".
+ *
+ * @param props - the control's copy, the page's state, and the edit actions.
+ * @returns the labelled control.
+ */
+function ModelField(props: ModelFieldProps) {
+  const { state } = props
+  const disabled = !state.writable
+  return (
+    <div className={styles.field}>
+      <div className={styles.head}>
+        <label className={styles.label} htmlFor={props.id}>{props.label}</label>
+        {state.keywordModel.overridden
+          ? (
+            <span className={styles.badges}>
+              <Tag tone="neutral">{props.overriddenLabel}</Tag>
+              <button
+                type="button"
+                className={styles.reset}
+                disabled={disabled}
+                onClick={props.onReset}
+              >
+                {props.resetLabel}
+              </button>
+            </span>
+          )
+          : null}
+      </div>
+      <select
+        id={props.id}
+        className={styles.control}
+        value={state.keywordModel.text}
         disabled={disabled}
         onChange={(event) => {
           const chosen = event.target.value
           if (chosen === '') {
-            unset(MODEL_FIELD)
-            unset(PROVIDER_FIELD)
+            props.onReset()
             return
           }
-          // A model is only reachable through the provider that serves it, so
-          // the provider is written with the model: choosing a model from
-          // another route without it would leave the child unroutable.
-          const provider = props.catalog.providerOf(chosen)
-          if (provider === undefined) unset(PROVIDER_FIELD)
-          else set(PROVIDER_FIELD, provider)
-          set(MODEL_FIELD, chosen)
+          props.onEdit(MODEL_FIELD, chosen)
+          const provider = state.groups.find(group => group.models.includes(chosen))?.provider
+          props.onEdit(PROVIDER_FIELD, provider ?? '')
         }}
       >
-        <option value="">{t('modelHint')}</option>
-        {groups.map(group => (
+        <option value="">{props.inheritLabel}</option>
+        {state.groups.map(group => (
           <optgroup key={group.provider} label={group.provider}>
-            {group.models.map(entry => <option key={entry} value={entry}>{entry}</option>)}
+            {group.models.map(model => <option key={model} value={model}>{model}</option>)}
           </optgroup>
         ))}
       </select>
-      <label htmlFor="plugin-config-delegation-keyword-count">{t('countLabel')}</label>
-      <input
-        id="plugin-config-delegation-keyword-count"
-        type="number"
-        min={1}
-        value={count}
-        disabled={disabled}
-        onChange={(event) => {
-          const parsed = Number(event.target.value)
-          if (event.target.value.trim() === '') unset(COUNT_FIELD)
-          else if (Number.isFinite(parsed)) set(COUNT_FIELD, parsed)
-        }}
-      />
-      <p>{t('countHint')}</p>
+      <p className={styles.hint}>{props.hint}</p>
     </div>
   )
 }
 
 /**
- * Read the model catalog's current groups.
+ * Read the page's state and follow it.
  *
- * @param catalog - the catalog source.
- * @returns the providers and the models each one serves.
+ * @param controller - the page's staged form.
+ * @returns the state the page renders.
  */
-function useModelGroups(catalog: DelegationModelCatalog): readonly DelegationModelGroup[] {
-  const [groups, setGroups] = useState<readonly DelegationModelGroup[]>([])
-  useEffect(() => {
-    const store = catalog.source
-    const read = (): void => { setGroups(store.getSnapshot().groups) }
-    read()
-    return store.subscribe(read)
-  }, [catalog])
-  return groups
+function useCardState(controller: DelegationCardController): DelegationCardState {
+  const [state, setState] = useState(() => controller.state())
+  useEffect(() => controller.subscribe(() => { setState(controller.state()) }), [controller])
+  return state
 }
