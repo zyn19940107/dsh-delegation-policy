@@ -25,11 +25,19 @@ export const DEFAULT_VERIFY_PROVIDER = 'spawn'
 /**
  * Default number of verification passes a delegated thought may run.
  *
- * One pass is the typical cost: one thinking child and one verifying child. A
- * second pass happens only when the first found a conflict, and it adds the
- * refinement of the conclusion plus one more verification.
+ * Zero by default. The grounding pass already looks up what the reasoning
+ * needed checked, and it does that from the child's own transcript, which is
+ * a better starting point than a finished conclusion: the terms come out of
+ * the reasoning rather than out of a summary of it. A verifying child sees
+ * only the conclusion and has to mine it for search terms itself, so it
+ * spends a model's worth of work to do the same job with less to go on.
+ *
+ * One pass still earns its keep when a conclusion cites sources: a verifier
+ * is the only one that can notice that a citation supports a different claim
+ * than the one it was attached to, which no search term would ever surface.
+ * Raise this to `1` or `2` to turn it back on.
  */
-export const DEFAULT_VERIFY_ROUNDS = 2
+export const DEFAULT_VERIFY_ROUNDS = 0
 
 /** Default budget for one verification pass, in milliseconds. */
 export const DEFAULT_VERIFY_TIMEOUT_MS = 600_000
