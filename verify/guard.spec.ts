@@ -8,7 +8,13 @@
  * pages; the parent gets the answer.
  */
 
-import { createNoRedelegationGuard, createWebGuard, PARENT_DENIED_WEB_TOOLS } from '../src/guard.js'
+import {
+  createChildBudget,
+  createNoRedelegationGuard,
+  createWebGuard,
+  markReader,
+  PARENT_DENIED_WEB_TOOLS,
+} from '../src/guard.js'
 
 let failures = 0
 
@@ -42,7 +48,7 @@ function execution(sessionId: string, origin: string, name: string): any {
 
 console.log('createWebGuard')
 {
-  const guard = createWebGuard()
+  const guard = createWebGuard(createChildBudget(3))
   check('refuses web_search in the parent', guard(execution('p', 'user', 'web_search')) !== undefined)
   check('refuses web_fetch in the parent', guard(execution('p', 'user', 'web_fetch')) !== undefined)
   check('refuses read_page in the parent', guard(execution('p', 'user', 'read_page')) !== undefined)
@@ -50,13 +56,20 @@ console.log('createWebGuard')
   check('leaves a local file read alone', guard(execution('p', 'user', 'ops_read_files')) === undefined)
 }
 {
-  const guard = createWebGuard()
-  check('allows a delegated child to search', guard(execution('c', 'subagent', 'web_search')) === undefined)
-  check('allows a delegated child to fetch', guard(execution('c', 'subagent', 'web_fetch')) === undefined)
-  check('allows a delegated child to read a page', guard(execution('c', 'subagent', 'read_page')) === undefined)
+  // A child whose job is to read pages may use them; a child whose job is to
+  // reason may not — its knowledge is gathered for it.
+  const budget = createChildBudget(3)
+  markReader(budget, 'searcher')
+  const guard = createWebGuard(budget)
+  check('allows a reader child to search', guard(execution('searcher', 'subagent', 'web_search')) === undefined)
+  check('allows a reader child to fetch', guard(execution('searcher', 'subagent', 'web_fetch')) === undefined)
+  check('allows a reader child to read a page', guard(execution('searcher', 'subagent', 'read_page')) === undefined)
+  check('refuses the search of a child that reasons', guard(execution('thinker', 'subagent', 'web_search')) !== undefined)
+  check('refuses the fetch of a child that reasons', guard(execution('thinker', 'subagent', 'web_fetch')) !== undefined)
+  check('refuses the page read of a child that reasons', guard(execution('thinker', 'subagent', 'read_page')) !== undefined)
 }
 {
-  const guard = createWebGuard()
+  const guard = createWebGuard(createChildBudget(3))
   const denial = guard(execution('p', 'user', 'web_fetch'))
   check('points the caller at search_web', denial !== undefined && denial.includes('search_web'))
   check('names the tool it refused', denial !== undefined && denial.includes('web_fetch'))
@@ -69,34 +82,37 @@ console.log('createWebGuard')
 
 console.log('createNoRedelegationGuard')
 {
-  // Only the conversation that asked, and the thinking child this plugin
-  // forked, may start another child — and the thinking child may not start a
-  // search, because a search inside a search looks for the same material
-  // twice.
+  // Two different rules. The plugin's own routes belong to the conversation
+  // that asked the question, so no child may call them — not even the thinking
+  // child. Ordinary orchestration is allowed for the thinking child alone.
   const thinking = new Set(['think-1'])
-  const guard = createNoRedelegationGuard(thinking, new Set())
+  const guard = createNoRedelegationGuard(thinking)
   check('refuses search_web in a child', guard(execution('c', 'subagent', 'search_web')) !== undefined)
   check('refuses think_deep in a child', guard(execution('c', 'subagent', 'think_deep')) !== undefined)
+  check('refuses classify_question in a child', guard(execution('c', 'subagent', 'classify_question')) !== undefined)
   check('refuses subagent in a child', guard(execution('c', 'subagent', 'subagent')) !== undefined)
   check('refuses subagent_fork in a child', guard(execution('c', 'subagent', 'subagent_fork')) !== undefined)
   check('leaves the parent\'s own tools alone', guard(execution('p', 'user', 'search_web')) === undefined)
   check('leaves the parent\'s subagent alone', guard(execution('p', 'user', 'subagent')) === undefined)
   check('allows the thinking child to start a child', guard(execution('think-1', 'subagent', 'subagent')) === undefined)
   check('allows the thinking child to fork', guard(execution('think-1', 'subagent', 'subagent_fork')) === undefined)
+  // A thought inside a thought is the pipeline eating itself, so the thinking
+  // child is refused these even though it may start a child.
   check('refuses a search inside the thinking child', guard(execution('think-1', 'subagent', 'search_web')) !== undefined)
+  check('refuses a thought inside the thinking child', guard(execution('think-1', 'subagent', 'think_deep')) !== undefined)
+  check('refuses a classification inside the thinking child', guard(execution('think-1', 'subagent', 'classify_question')) !== undefined)
   check('leaves a child\'s own web search alone', guard(execution('c', 'subagent', 'web_search')) === undefined)
   check('leaves a child\'s page fetch alone', guard(execution('c', 'subagent', 'web_fetch')) === undefined)
   check('leaves the other tools alone', guard(execution('c', 'subagent', 'read')) === undefined)
 }
 {
-  const guard = createNoRedelegationGuard(new Set(), new Set(['searcher-1']))
-  check('allows a designated searcher to search', guard(execution('searcher-1', 'subagent', 'search_web')) === undefined)
-  check('still refuses it to delegate', guard(execution('searcher-1', 'subagent', 'subagent')) !== undefined)
+  const denial = createNoRedelegationGuard()(execution('c', 'subagent', 'classify_question'))
+  check('names the tool it refused', denial !== undefined && denial.includes('classify_question'))
+  check('says the route belongs to the conversation', denial !== undefined && denial.includes('conversation'))
 }
 {
-  const denial = createNoRedelegationGuard(new Set())(execution('c', 'subagent', 'search_web'))
-  check('names the tool it refused', denial !== undefined && denial.includes('search_web'))
-  check('tells the child to do the work itself', denial !== undefined && denial.includes('yourself'))
+  const denial = createNoRedelegationGuard()(execution('c', 'subagent', 'subagent'))
+  check('tells a child to do the work itself', denial !== undefined && denial.includes('yourself'))
 }
 
 console.log(failures === 0 ? '\nall checks passed' : `\n${failures} check(s) failed`)

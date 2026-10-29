@@ -17,7 +17,6 @@ import type {} from '@deepseek-ai/dsh-subagent'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import type { ObjectJsonSchema } from '@deepseek-ai/dsh-tools'
 import { registerChild, releaseChildBudget, type ChildBudget } from './guard.js'
-import { projectThinkResult } from './project.js'
 import { delegateSearch, type SearchConfig } from './search.js'
 import {
   buildKeywordSearchPrompt,
@@ -214,8 +213,8 @@ export function buildRethinkPrompt(
     'Treat it as retrieved material, not as established fact. Where it contradicts what you concluded, '
     + 'the conclusion changes and the reason is stated. Where the sources do not settle a point, say '
     + 'so in the conclusion rather than choosing a side.',
-    'Then deliver your result with the structured_output tool, keeping the structure you were asked '
-    + 'for: conclusion, key points, assumptions, risks.',
+    'This is the same thought you were already having: you have the conclusion you reached and the '
+    + 'material the check brought back. Revise where it is wrong and keep what still stands.',
   ].join('\n')
 }
 
@@ -289,19 +288,126 @@ export function buildThinkChildPrompt(
     + 'gathered for you and arrives with the material; the retrieval is not your task.',
   )
   parts.push(
-    'Then deliver your result with the structured_output tool:',
-    '- conclusion: the recommended answer, stated directly in a few sentences. Give a recommendation, not '
-    + 'a survey. Say plainly when the evidence does not settle the question, and when you are uncertain.',
-    '- keyPoints: the three to five points that carry the conclusion, one sentence each.',
-    '- assumptions: what the conclusion rests on that could be wrong.',
-    '- risks: what would make this recommendation fail, and at what scale or under what condition.',
+    'Give a recommendation, not a survey. Say plainly when the evidence does not settle the question, '
+    + 'and when you are uncertain.',
     'Do not narrate your reasoning process and do not report what you considered and rejected. The parent '
-    + 'sees only this structured result.',
+    + 'sees only your answer.',
   )
   return parts.join('\n\n')
 }
 
 /**
+ * How the thinking child must end its answer.
+ *
+ * A continuable child has no `structured_output` tool — the runtime installs
+ * that tool only for a one-shot structured run — so the pipeline reads the
+ * answer from the child's text. The child is told to close with one fenced
+ * JSON block; {@link parseThinkAnswer} reads it, and falls back to treating the
+ * whole answer as the conclusion when it is missing or malformed.
+ */
+export const THINK_ANSWER_CONTRACT = [
+  'End your answer with exactly one fenced JSON block, and nothing after it:',
+  '```json',
+  '{"conclusion": "…", "keyPoints": ["…"], "assumptions": ["…"], "risks": ["…"]}',
+  '```',
+  'Every field is required. `conclusion` is the recommendation itself, in a few sentences. `keyPoints` '
+  + 'are the three to five points that carry it, one sentence each. `assumptions` are what the '
+  + 'conclusion rests on that could be wrong. `risks` are what would make it fail, and at what scale.',
+].join('\n')
+
+/**
+ * Read the last JSON block in a child's answer.
+ *
+ * The contract asks for one block at the end, but a model may write an example
+ * block earlier in its answer, so the last block that parses is the answer.
+ *
+ * @param text - the child's answer.
+ * @returns the parsed object, or undefined when no block parses.
+ */
+function lastAnswerBlock(text: string): Record<string, unknown> | undefined {
+  const fence = /```(?:json)?\s*\n([\s\S]*?)```/gu
+  let found: Record<string, unknown> | undefined
+  for (const match of text.matchAll(fence)) {
+    const body = match[1]
+    if (body === undefined) continue
+    try {
+      const parsed: unknown = JSON.parse(body)
+      if (typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed)) {
+        found = parsed as Record<string, unknown>
+      }
+    } catch {
+      // A block that does not parse is not the answer; keep looking.
+    }
+  }
+  if (found !== undefined) return found
+  const open = text.lastIndexOf('{')
+  const close = text.lastIndexOf('}')
+  if (open < 0 || close <= open) return undefined
+  try {
+    const parsed: unknown = JSON.parse(text.slice(open, close + 1))
+    if (typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed)) {
+      return parsed as Record<string, unknown>
+    }
+  } catch {
+    // Fall through: the caller treats the whole answer as the conclusion.
+  }
+  return undefined
+}
+
+/**
+ * Project a thinking child's answer into the canonical output value.
+ *
+ * A child that ignored the contract still produced an answer, and losing it
+ * would lose the thought. Its whole text becomes the conclusion and the other
+ * fields are empty, which the parent reads as "no key points were given".
+ *
+ * @param text - the child's answer.
+ * @returns the canonical output value.
+ */
+export function parseThinkAnswer(text: string): ThinkDeepOutput {
+  const record = lastAnswerBlock(text)
+  if (record === undefined) {
+    return { conclusion: text.trim(), keyPoints: [], assumptions: [], risks: [] }
+  }
+  const one = (value: unknown): string => (typeof value === 'string' ? value.trim() : '')
+  const many = (value: unknown): string[] => (Array.isArray(value)
+    ? value.filter((item): item is string => typeof item === 'string')
+      .map((item) => item.trim())
+      .filter((item) => item.length > 0)
+    : [])
+  const conclusion = one(record['conclusion'])
+  if (conclusion === '') {
+    return { conclusion: text.trim(), keyPoints: [], assumptions: [], risks: [] }
+  }
+  return {
+    conclusion,
+    keyPoints: many(record['keyPoints']),
+    assumptions: many(record['assumptions']),
+    risks: many(record['risks']),
+  }
+}
+
+/**
+ * Wait for one turn of a continuable child to finish.
+ *
+ * The inbox accepts a message before its turn starts, so waiting for idle
+ * alone can return while the child is still between turns. The wait therefore
+ * gives the turn a moment to open, and accepts a child that finishes so fast
+ * it was never observed running.
+ *
+ * @param agent - the child's live agent, when it is resident.
+ * @param signal - the caller's cancellation.
+ */
+async function waitForChildTurn(agent: Agent | undefined, signal: AbortSignal): Promise<void> {
+  if (agent === undefined) throw new Error('the thinking child is not resident in this process')
+  const deadline = Date.now() + 5_000
+  while (agent.status !== 'running' && Date.now() < deadline) {
+    signal.throwIfAborted()
+    await new Promise<void>((resolve) => { setTimeout(resolve, 50) })
+  }
+  await agent.whenIdle()
+  signal.throwIfAborted()
+}
 
 /**
  * Register the `think_deep` tool.
@@ -462,30 +568,47 @@ export function applyThinkTool(
       // against the outside world, and a retrieval pass looks up exactly those.
       // The thinking child then reconsiders with that material beside its own
       // conclusion.
-      const runThinking = async (childPrompt: string): Promise<{ projected: ThinkDeepOutput, transcript: WatchedTranscript }> => {
-        const base = {
-          parent,
-          prompt: [{ type: 'text', text: childPrompt }] as ContentBlock[],
-          signal: exec.signal,
-          outputSchema: THINK_OUTPUT_SCHEMA,
+      // One thinking child for the whole pipeline. The second round is that
+      // same child continuing: it already holds the whole conversation and its
+      // own first conclusion, so a fresh fork would re-seed the same history
+      // and then reason about a conclusion it did not write. A continuable
+      // child has no structured-output tool, so the answer comes back as text
+      // under {@link THINK_ANSWER_CONTRACT}.
+      let thinkingChildId: Parameters<typeof ctx.subagents.sendMessage>[1] | undefined
+      const runThinking = async (
+        childPrompt: string,
+      ): Promise<{ projected: ThinkDeepOutput, transcript: WatchedTranscript }> => {
+        const content = [{
+          type: 'text',
+          text: `${childPrompt}\n\n${THINK_ANSWER_CONTRACT}`,
+        }] as ContentBlock[]
+        if (thinkingChildId === undefined) {
+          const started = await ctx.subagents.startContinuable({
+            provider: config.provider,
+            label: 'think_deep',
+            request: { parent, prompt: content },
+            signal: exec.signal,
+          })
+          thinkingChildId = started.childId
+          registerChild(budget, started.childId, config.maxChildCalls)
+          // The thinking child may start a child of its own: it reasons over
+          // this conversation and may want a child's help to settle a point.
+          // Every other child this plugin starts may not.
+          onForked?.(started.childId)
+        } else {
+          await ctx.subagents.sendMessage(parent, thinkingChildId, content, { signal: exec.signal })
         }
-        const run = await ctx.subagents.start(config.provider, base)
-        registerChild(budget, run.id, config.maxChildCalls)
-        // The thinking child may start a child of its own: it reasons over this
-        // conversation and may want a child's help to settle a point. Every
-        // other child this plugin starts may not.
-        onForked?.(run.id)
+        const agent = ctx.agents.get(thinkingChildId)
         // Watch the child's own stream. A fork child runs in this process, so
         // its reasoning and its answer can be watched as it writes them; the
         // extractor is the child that turns that transcript into search terms.
-        const watcher = watchChildStream(run.localAgent)
+        const watcher = watchChildStream(agent)
         try {
-          const projected = projectThinkResult(await run.result)
-          return { projected, transcript: watcher.transcript() }
+          await waitForChildTurn(agent, exec.signal)
+          const transcript = watcher.transcript()
+          return { projected: parseThinkAnswer(transcript.content), transcript }
         } finally {
           watcher.stop()
-          releaseChildBudget(budget, run.id)
-          await run.dispose()
         }
       }
 
@@ -600,6 +723,14 @@ export function applyThinkTool(
       // The turn has been answered by a delegated thought, so a turn that was
       // required to delegate has done what it was required to do.
       onAnswered?.(parent.session.id)
+
+      // The thinking child is resident for as long as the pipeline needs it and
+      // no longer. Releasing it here keeps a finished thought from holding a
+      // continuable slot until the parent's turn closes.
+      if (thinkingChildId !== undefined) {
+        releaseChildBudget(budget, thinkingChildId)
+        await ctx.subagents.drainContinuableChildren(parent, [thinkingChildId])
+      }
 
       return {
         conclusion,

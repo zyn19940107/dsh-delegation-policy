@@ -13,7 +13,7 @@ import type { ContentBlock } from '@deepseek-ai/dsh-llm'
 import type {} from '@deepseek-ai/dsh-subagent'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import type { ObjectJsonSchema } from '@deepseek-ai/dsh-tools'
-import { registerChild, releaseChildBudget, type ChildBudget } from './guard.js'
+import { markReader, registerChild, releaseChildBudget, type ChildBudget } from './guard.js'
 import { normalizeSources, projectSearchResult, type SearchProjection } from './project.js'
 
 /** Provider that runs the search child. */
@@ -217,6 +217,7 @@ export async function delegateSearch(
     outputSchema: CHILD_OUTPUT_SCHEMA,
   })
   registerChild(budget, run.id, maxCalls)
+  markReader(budget, run.id)
   try {
     const result = await run.result
     return projectSearchResult(result, config.maxSources, config.maxSnippetChars)

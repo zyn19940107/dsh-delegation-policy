@@ -33,7 +33,7 @@ console.log('buildThinkChildPrompt')
 {
   const plain = buildThinkChildPrompt('what should we do', undefined)
   check('has no retrieval section', !plain.includes('External knowledge'))
-  check('still asks for the structured result', plain.includes('structured_output'))
+  check('no longer asks for structured_output', !plain.includes('structured_output'))
   // The child is not invited to go looking. It keeps its tools, but the
   // prompt does not hand it a reading budget to spend.
   check('offers no retrieval budget', !plain.includes('retrieval calls'))

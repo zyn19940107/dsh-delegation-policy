@@ -85,7 +85,7 @@ console.log('buildRethinkPrompt')
   check('carries the material', prompt.includes('The source says otherwise.'))
   check('carries the source', prompt.includes('https://example.test/a'))
   check('says the material is not fact', prompt.includes('not as established fact'))
-  check('asks for the structure back', prompt.includes('conclusion, key points, assumptions, risks'))
+  check('tells the child it is continuing its own thought', prompt.includes('the same thought you were already having'))
   check('says an unsettled point stays unsettled', prompt.includes('rather than choosing a side'))
 }
 

@@ -16,7 +16,7 @@
 import type { Context } from '@deepseek-ai/cordis'
 import type { ContentBlock } from '@deepseek-ai/dsh-llm'
 import type { ObjectJsonSchema } from '@deepseek-ai/dsh-tools'
-import { registerChild, releaseChildBudget, type ChildBudget } from './guard.js'
+import { markReader, registerChild, releaseChildBudget, type ChildBudget } from './guard.js'
 import { projectVerdict, type VerdictProjection } from './project.js'
 
 /** Provider that runs the verifier. */
@@ -268,6 +268,7 @@ export async function runVerifier(
     outputSchema: VERIFIER_OUTPUT_SCHEMA,
   })
   registerChild(budget, run.id, maxCalls)
+  markReader(budget, run.id)
   try {
     const result = await run.result
     return projectVerdict(result)

@@ -62,8 +62,11 @@ import {
 /** Cordis plugin name used by loader diagnostics. */
 export const name = 'delegation-policy'
 
-/** Services this plugin needs: the tool registry, the delegation seam, and prompt assembly. */
-export const inject = ['tools', 'subagents', 'systemPrompt']
+/**
+ * Services this plugin needs: the tool registry, the delegation seam, the agent
+ * registry that resolves a continuable child, and prompt assembly.
+ */
+export const inject = ['tools', 'subagents', 'systemPrompt', 'agents']
 
 /**
  * The delegation policy, as the model should see it.
@@ -237,18 +240,22 @@ export function apply(ctx: Context, config: Config): void {
       : DELEGATION_GUIDANCE,
   })
 
-  ctx.tools.guard(createWebGuard())
+  ctx.tools.guard(createWebGuard(budget))
 
-  // Only the conversation that asked the question, and the thinking child this
-  // plugin forked, may start another agent. Every other child is refused: a
-  // chain of them searches the same things again at every level, and the
-  // levels are invisible to the parent.
+  // Two different rules, and confusing them is what let a thought start
+  // another thought.
   //
-  // The thinking child may start a child but not a search. A search child
-  // that asked for another search would nest one inside the other, and every
-  // level would look for the same material again.
+  // The plugin's own routes — search_web, think_deep, classify_question —
+  // belong to the conversation that asked the question. No child may call
+  // them, ever: a thought inside a thought is the pipeline eating itself, and
+  // a child that classifies is answering a question nobody asked it.
+  //
+  // Ordinary orchestration is different. The conversation may start a child,
+  // and so may the thinking child this plugin forked, because that child
+  // reasons over the whole conversation and may need a child's help. Every
+  // other child is refused there too.
   const forkSessions = new Set<string>()
-  ctx.tools.guard(createNoRedelegationGuard(forkSessions, new Set()))
+  ctx.tools.guard(createNoRedelegationGuard(forkSessions))
 
   // The judgement gate. The agent states its own classification; the plugin
   // makes the statement unavoidable by checking, at the point where the agent's
