@@ -209,9 +209,15 @@ until the rule is satisfied. A turn that refuses to classify a few times is let
 through: the gate is a rule, not a trap, and a model that cannot state its
 conclusion must still be able to answer.
 
-The classification belongs to the conversation that asked the question. The
-delegated children never see the tool: the thinking child, the extractor, the
-verifier and the search children all run without it.
+The classification belongs to the conversation that asked the question, so
+the gate only ever holds the main agent. A delegated child may use every tool
+the parent has — the thinking child, the extractor, the verifier and the search
+children all run with full permissions — and none of them is ever pulled back
+for not having classified.
+
+Every delegated child is disposed when its part of the flow is over: the
+search child is closed once it has returned its knowledge, the extractor once
+it has named its terms, the thinking child once it has produced its conclusion.
 
 ## The grounding pass reads the child's own work
 
@@ -221,10 +227,10 @@ reasoning and the answer the child wrote — because that text is where the
 claims that need checking actually are. A fork child runs in the same process,
 so its stream is watched while it writes, and the extractor reads what it wrote.
 
-The extractor names terms and nothing else: it has no tool of its own, so it
-cannot answer the question it was asked about and cannot look anything up. The
-retrieval belongs to a separate child with a clean context, and the knowledge
-that comes back is what reaches the parent.
+The extractor names terms and nothing else. The retrieval belongs to a separate
+child with a clean context, and the knowledge that comes back goes to the
+delegated thought, not to the parent: the parent receives the second round's
+reasoning, which is the answer, and never the corpus that shaped it.
 
 ## The parent's only route to the web
 

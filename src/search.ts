@@ -19,9 +19,6 @@ import { normalizeSources, projectSearchResult, type SearchProjection } from './
 /** Provider that runs the search child. */
 export const DEFAULT_SEARCH_PROVIDER = 'spawn'
 
-/** Tools the search child may use. Everything else is filtered out of its view. */
-export const CHILD_TOOLS: readonly string[] = ['web_search', 'web_fetch']
-
 /** Default cap on sources the parent receives from one search. */
 export const DEFAULT_MAX_SOURCES = 5
 
@@ -218,7 +215,6 @@ export async function delegateSearch(
     prompt: [{ type: 'text', text: prompt }] as ContentBlock[],
     signal,
     outputSchema: CHILD_OUTPUT_SCHEMA,
-    toolFilter: { allow: [...CHILD_TOOLS] },
   })
   registerChild(budget, run.id, maxCalls)
   try {

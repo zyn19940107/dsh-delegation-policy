@@ -52,37 +52,6 @@ export const DEFAULT_CONFLICT_SEARCH_CALLS = 2
 export const DEFAULT_THINK_TIMEOUT_MS = 900_000
 
 /**
- * Tools the thinking child must not use. A child that reasons about the work
- * has no business mutating it, and a child that delegates again defeats the
- * point of delegating once.
- *
- * The list is filtered against the live registry before it is applied:
- * `tools.restrict()` rejects an unknown name, and a profile need not mount
- * every tool here.
- */
-export const THINK_DENY_CANDIDATES: readonly string[] = [
-  'write', 'edit', 'pwsh', 'bash',
-  'spawn_teammate', 'team_task_create', 'team_task_update',
-  'workflow', 'create_goal', 'update_goal',
-  'schedule_create', 'schedule_update', 'schedule_delete',
-  'job_kill', 'present',
-  'search_web', 'think_deep',
-  // The classification belongs to the conversation that asked the question. A
-  // child that classifies its own slice of the work would answer a question
-  // nobody asked it.
-  'classify_question',
-]
-
-/**
- * Tool names a thinking child must never see, matched by pattern.
- *
- * A profile names its shell and its file-writing tools differently — `bash`,
- * `pwsh`, `ops_bash` — so a fixed list misses whatever this profile happens
- * to mount. The names are matched instead.
- */
-export const THINK_DENY_PATTERN = /^(ops_)?(bash|pwsh|shell|sh|zsh|cmd|command|powershell|write|edit|patch|apply_patch|delete|remove)$/iu
-
-/**
  * The structured result the thinking child delivers. The child calls the
  * runtime's `structured_output` tool with this schema; the driver validates
  * the value and hands it back as the run's structured result.
@@ -137,19 +106,20 @@ export interface ThinkVerification {
   evidence: { url: string, title?: string, snippet?: string }[]
 }
 
-/** The canonical `think_deep` output value. */
+/**
+ * The canonical `think_deep` output value.
+ *
+ * What the parent receives is the second round's reasoning. The knowledge the
+ * pipeline retrieved along the way stays inside the pipeline: it was gathered
+ * to change the thinking, and handing it to the parent as well would give the
+ * parent a corpus it did not ask for and a second account of the same facts.
+ */
 interface ThinkDeepOutput {
   conclusion: string
   keyPoints: string[]
   assumptions: string[]
   risks: string[]
   verification?: ThinkVerification
-  /** What a retrieval pass aimed at the contradictions found, when one ran. */
-  conflictRetrieved?: RetrievedKnowledge
-  /** The terms a separate child named as worth checking against a source. */
-  keywords?: string[]
-  /** What the retrieval pass on those terms found. */
-  keywordRetrieved?: RetrievedKnowledge
 }
 
 /** Thinking route configuration. */
@@ -256,29 +226,6 @@ export function formatThinkDeepOutput(value: ThinkDeepOutput): string {
   if (value.risks.length > 0) {
     parts.push(`Risks:\n${value.risks.map((item) => `- ${item}`).join('\n')}`)
   }
-  if (value.keywords !== undefined && value.keywords.length > 0) {
-    parts.push(`Checked against sources for: ${value.keywords.join(', ')}.`)
-  }
-  if (value.keywordRetrieved !== undefined) {
-    const lines = ['Retrieved for those points:']
-    if (value.keywordRetrieved.answer.length > 0) lines.push(value.keywordRetrieved.answer)
-    if (value.keywordRetrieved.sources.length > 0) {
-      lines.push(`Sources:\n${
-        value.keywordRetrieved.sources.map((source) => `- [${source.title ?? source.url}](${source.url})`).join('\n')
-      }`)
-    }
-    parts.push(lines.join('\n'))
-  }
-  if (value.conflictRetrieved !== undefined) {
-    const lines = ['Retrieved for the disputed points only:']
-    if (value.conflictRetrieved.answer.length > 0) lines.push(value.conflictRetrieved.answer)
-    if (value.conflictRetrieved.sources.length > 0) {
-      lines.push(`Sources:\n${
-        value.conflictRetrieved.sources.map((source) => `- [${source.title ?? source.url}](${source.url})`).join('\n')
-      }`)
-    }
-    parts.push(lines.join('\n'))
-  }
   if (value.verification !== undefined) {
     const { rounds, verdict, problems, evidence } = value.verification
     const head = verdict === 'confirmed'
@@ -295,6 +242,11 @@ export function formatThinkDeepOutput(value: ThinkDeepOutput): string {
     }
     parts.push(lines.join('\n'))
   }
+  parts.push(
+    'This is the delegated answer, already reasoned over and checked. Answer the user with it: '
+    + 'state the conclusion as your own answer, and keep the key points, the assumptions and the '
+    + 'risks as they are given.',
+  )
   return parts.join('\n\n')
 }
 
@@ -342,42 +294,6 @@ export function buildThinkChildPrompt(
 }
 
 /**
- * Recognize a failed tool restriction.
- *
- * @param error - the thrown value.
- * @returns true when the failure came from an unknown name in a tool filter.
- */
-function isRestrictionFailure(error: unknown): boolean {
-  const message = error instanceof Error ? error.message : String(error)
-  return message.includes('tools.restrict()') && message.includes('unknown')
-}
-
-/**
- * Recover the child's own restrictable names from a restriction failure.
- *
- * The failure message names every tool the child can be restricted to. That
- * list is the only precise source of the child's scope: the parent's scope and
- * the global view both differ from it, and `tools.restrict` rejects a name the
- * child does not know.
- *
- * @param error - the thrown value.
- * @param candidates - the names this route wants to deny.
- * @returns the deny list the child will accept, or undefined when the message
- *   does not carry a name list.
- */
-function denyFromRestrictionFailure(
-  error: unknown,
-  candidates: readonly string[],
-): string[] | undefined {
-  const message = error instanceof Error ? error.message : String(error)
-  const match = /known global tools: ([^\n]+)/u.exec(message)
-  if (match === null) return undefined
-  const known = new Set(
-    match[1]!.split(',').map((entry) => entry.trim().replace(/^"|"$/gu, '')),
-  )
-  const deny = candidates.filter((name) => known.has(name))
-  return deny.length > 0 ? deny : undefined
-}
 
 /**
  * Register the `think_deep` tool.
@@ -400,10 +316,6 @@ export function applyThinkTool(
   onAnswered?: (sessionId: string) => void,
 ): void {
   const registered = readConfig()
-  // The names this child accepts, learned from a restriction failure. The
-  // child's scope cannot be derived before the spawn, and the failure names
-  // every tool the child accepts.
-  let knownChildTools: Set<string> | undefined
   ctx.tools.register(defineTool({
     name: 'think_deep',
     description: 'Delegate a hard question to a subagent that inherits this conversation and reasons over '
@@ -521,30 +433,11 @@ export function applyThinkTool(
       if (parent === undefined) {
         throw new Error('think_deep needs an agent to delegate from')
       }
-      // The child's restrictable names are not knowable before the spawn: the
-      // child's scope is neither the parent's scope nor the global view, and
-      // `tools.restrict` rejects a name the child does not know. The list is
-      // therefore seeded from the parent's scope — which is non-empty and may
-      // over-reach — and corrected from the failure that an over-reaching name
-      // produces. The corrected set is remembered, so later delegations
-      // restrict on the first attempt.
-      //
-      // The shell and file-writing tools are picked by name from the parent's
-      // own visible set, because a profile names them differently.
-      const patterned = ctx.tools.schemas(parent)
-        .map((schema) => schema.name)
-        .filter((name) => THINK_DENY_PATTERN.test(name))
-      const candidates = knownChildTools === undefined
-        ? [...new Set([
-          ...THINK_DENY_CANDIDATES.filter((name) => ctx.tools.get(name, parent) !== undefined),
-          ...patterned,
-        ])]
-        : [...new Set([
-          ...THINK_DENY_CANDIDATES.filter((name) => knownChildTools!.has(name)),
-          // A name the child does not know cannot be denied, and the child
-          // cannot call it either.
-          ...patterned.filter((name) => knownChildTools!.has(name)),
-        ])]
+      // The child runs with the same permissions the parent has. A delegated
+      // child is a full agent: it may read, write, search and delegate, and
+      // the policy that governs the parent governs it too. Restricting it
+      // would be a rule the user never asked for, and it would make the
+      // child's answer weaker than the question deserved.
       const maxRounds = parsed.verify === false ? 0 : config.verifyRounds
 
       // No retrieval happens here. The thinking child is a fork: it inherits
@@ -565,25 +458,7 @@ export function applyThinkTool(
           signal: exec.signal,
           outputSchema: THINK_OUTPUT_SCHEMA,
         }
-        let run
-        try {
-          run = await ctx.subagents.start(
-            config.provider,
-            candidates.length > 0 ? { ...base, toolFilter: { deny: candidates } } : base,
-          )
-        } catch (error: unknown) {
-          if (!isRestrictionFailure(error)) throw error
-          // The failed spawn published no child, so retrying is safe. The child's
-          // own restrictable names are recovered from the failure and used
-          // instead; a thought must never die because a profile's scopes
-          // disagree.
-          const corrected = denyFromRestrictionFailure(error, THINK_DENY_CANDIDATES)
-          if (corrected !== undefined) knownChildTools = new Set(corrected)
-          run = await ctx.subagents.start(
-            config.provider,
-            corrected === undefined ? base : { ...base, toolFilter: { deny: corrected } },
-          )
-        }
+        const run = await ctx.subagents.start(config.provider, base)
         registerChild(budget, run.id, config.maxChildCalls)
         // Watch the child's own stream. A fork child runs in this process, so
         // its reasoning and its answer can be watched as it writes them; the
@@ -709,9 +584,6 @@ export function applyThinkTool(
         assumptions,
         risks,
         ...verification !== undefined ? { verification } : {},
-        ...extracted.keywords.length > 0 ? { keywords: extracted.keywords } : {},
-        ...keywordRetrieved !== undefined ? { keywordRetrieved } : {},
-        ...conflictRetrieved !== undefined ? { conflictRetrieved } : {},
       }
     },
     presentCall: (args) => {

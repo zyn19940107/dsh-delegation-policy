@@ -196,11 +196,6 @@ export async function runKeywordExtractor(
     }] as ContentBlock[],
     signal,
     outputSchema: KEYWORD_OUTPUT_SCHEMA,
-    // The extractor names terms; it does not answer, judge, or look them up.
-    // It reads the delegated child's transcript and returns search terms, so
-    // it has no tool of its own: the retrieval belongs to a separate child
-    // with a clean context.
-    toolFilter: { allow: [] },
     ...agentOptions === undefined ? {} : { agentOptions },
   })
   registerChild(budget, run.id, config.maxChildCalls)

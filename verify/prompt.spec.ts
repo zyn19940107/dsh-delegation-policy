@@ -7,7 +7,7 @@
  * to treat it as material rather than as fact.
  */
 
-import { buildThinkChildPrompt } from '../src/think.js'
+import { buildThinkChildPrompt, formatThinkDeepOutput } from '../src/think.js'
 import { buildRefinePrompt, buildConflictSearchPrompt } from '../src/verify.js'
 import { DELEGATION_GUIDANCE } from '../src/index.js'
 
@@ -40,6 +40,25 @@ console.log('buildThinkChildPrompt')
   check('keeps the conversation instruction', prompt.includes('full context of this conversation'))
   check('carries no retrieval material of its own', !prompt.includes('External knowledge'))
   check('states the reading budget', prompt.includes('5 retrieval calls'))
+}
+
+console.log('formatThinkDeepOutput')
+{
+  const text = formatThinkDeepOutput({
+    conclusion: 'Use the queue only for the slow consumers.',
+    keyPoints: ['the slow consumer sets the need'],
+    assumptions: ['the traffic is bursty'],
+    risks: ['the queue adds a failure mode'],
+  })
+  check('carries the conclusion', text.includes('Use the queue only for the slow consumers.'))
+  check('carries the key points', text.includes('the slow consumer sets the need'))
+  check('carries the assumptions', text.includes('the traffic is bursty'))
+  check('carries the risks', text.includes('the queue adds a failure mode'))
+  // The knowledge the pipeline retrieved stays inside the pipeline. The parent
+  // receives the delegated answer, not a second copy of the corpus.
+  check('does not hand the parent a retrieved corpus', !text.includes('Retrieved for those points'))
+  check('does not list the search terms', !text.includes('Checked against sources for'))
+  check('tells the parent to answer with it', text.includes('Answer the user with it'))
 }
 
 console.log('buildConflictSearchPrompt')

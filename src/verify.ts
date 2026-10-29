@@ -34,9 +34,6 @@ export const DEFAULT_VERIFY_ROUNDS = 2
 /** Default budget for one verification pass, in milliseconds. */
 export const DEFAULT_VERIFY_TIMEOUT_MS = 600_000
 
-/** Tools the verifier may use. */
-export const VERIFIER_TOOLS: readonly string[] = ['web_search', 'web_fetch']
-
 /**
  * The structured result the verifier delivers. The child calls the runtime's
  * `structured_output` tool with this schema; the driver validates the value
@@ -261,7 +258,6 @@ export async function runVerifier(
     }] as ContentBlock[],
     signal,
     outputSchema: VERIFIER_OUTPUT_SCHEMA,
-    toolFilter: { allow: [...VERIFIER_TOOLS] },
   })
   registerChild(budget, run.id, maxCalls)
   try {
