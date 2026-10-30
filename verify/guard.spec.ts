@@ -11,9 +11,11 @@
 import {
   createChildBudget,
   createNoRedelegationGuard,
+  createThoughtOnlyGuard,
   createWebGuard,
   markReader,
   PARENT_DENIED_WEB_TOOLS,
+  ThoughtRoute,
 } from '../src/guard.js'
 
 let failures = 0
@@ -113,6 +115,34 @@ console.log('createNoRedelegationGuard')
 {
   const denial = createNoRedelegationGuard()(execution('c', 'subagent', 'subagent'))
   check('tells a child to do the work itself', denial !== undefined && denial.includes('yourself'))
+}
+
+console.log('createThoughtOnlyGuard')
+{
+  // A turn handed to a delegated thought has nothing left to do itself. The
+  // routing is recorded when think_deep is dispatched, so a search issued in
+  // the same step as the thought is refused rather than dispatched alongside it.
+  const route = new ThoughtRoute()
+  const guard = createThoughtOnlyGuard(route)
+  check('leaves a turn alone before it routes', guard(execution('p', 'user', 'search_web')) === undefined)
+  route.begin('p')
+  const denial = guard(execution('p', 'user', 'search_web'))
+  check('refuses a search after the thought was dispatched', denial !== undefined)
+  check('refuses a file edit after the thought was dispatched', guard(execution('p', 'user', 'write')) !== undefined)
+  check('refuses a shell command after the thought was dispatched', guard(execution('p', 'user', 'ops_bash')) !== undefined)
+  check('refuses starting another agent after the thought was dispatched', guard(execution('p', 'user', 'subagent')) !== undefined)
+  check('keeps think_deep itself callable', guard(execution('p', 'user', 'think_deep')) === undefined)
+  check('says the thought carries the turn', denial !== undefined && denial.includes('carries the whole turn'))
+  check('says what to do instead', denial !== undefined && denial.includes('Present the conclusion'))
+  check('names the tool it refused', denial !== undefined && denial.includes('search_web'))
+  // Children are untouched: the rule is about the conversation that asked.
+  check('leaves a child alone', guard(execution('c', 'subagent', 'search_web')) === undefined)
+  // A new turn clears the routing, and a failed thought releases the turn.
+  route.clear('p')
+  check('leaves the next turn alone', guard(execution('p', 'user', 'search_web')) === undefined)
+  route.begin('p')
+  route.clear('p')
+  check('releases the turn when the thought failed', guard(execution('p', 'user', 'ops_bash')) === undefined)
 }
 
 console.log(failures === 0 ? '\nall checks passed' : `\n${failures} check(s) failed`)

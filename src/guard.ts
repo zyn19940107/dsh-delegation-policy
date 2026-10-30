@@ -148,6 +148,65 @@ export function createWebGuard(budget: ChildBudget): ToolGuard {
 }
 
 /**
+ * The turns a delegated thought is carrying.
+ *
+ * A judgement handed to `think_deep` is not a step the conversation takes and
+ * then continues past — it is the whole turn. The thought reasons, retrieves
+ * and answers; the conversation's own agent has nothing left to do but present
+ * the conclusion. Left to itself the agent does exactly what it did before this
+ * guard existed: it dispatches the thought *and* a search in the same breath,
+ * then spends the rest of the turn re-reading the workspace and tidying up
+ * after children. Every one of those calls is the conversation redoing the work
+ * the delegation already did.
+ *
+ * So the route is tracked per turn and enforced at the execution point: once
+ * `think_deep` is dispatched, every other call in that turn is refused.
+ */
+export class ThoughtRoute {
+  private readonly routed = new Set<string>()
+
+  /** Record that the session's current turn was handed to a delegated thought. */
+  begin(sessionId: string): void {
+    this.routed.add(sessionId)
+  }
+
+  /** Forget the routing, when the thought failed or the next turn opens. */
+  clear(sessionId: string): void {
+    this.routed.delete(sessionId)
+  }
+
+  /** Whether the session's current turn is carried by a delegated thought. */
+  has(sessionId: string): boolean {
+    return this.routed.has(sessionId)
+  }
+}
+
+/**
+ * Refuse every call in a turn that a delegated thought is already carrying.
+ *
+ * `think_deep` itself stays callable so a retry is possible after a failure,
+ * and so the call that establishes the routing is never refused by it. Children
+ * are untouched: the rule is about the conversation that asked the question.
+ *
+ * @param route - the per-turn routing record.
+ * @returns the guard.
+ */
+export function createThoughtOnlyGuard(route: ThoughtRoute): ToolGuard {
+  return (execution) => {
+    const agent: Agent | undefined = execution.agent
+    if (agent === undefined) return undefined
+    if (agent.session.header.origin === 'subagent') return undefined
+    if (!route.has(agent.session.id)) return undefined
+    if (execution.name === 'think_deep') return undefined
+    return 'This turn was handed to think_deep, and that delegated thought carries the whole turn: it '
+      + 'reasons, it retrieves, and its conclusion is the answer. Present the conclusion it returned — '
+      + 'the recommendation, then its key points, assumptions and risks — as your reply. Do not call '
+      + `${execution.name} or any other tool in this turn: the work it would do is already inside the `
+      + 'delegated answer.'
+  }
+}
+
+/**
  * The plugin's own routes.
  *
  * These are the conversation's routes, not a child's. `think_deep` starts a

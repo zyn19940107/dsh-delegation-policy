@@ -316,6 +316,34 @@ export const THINK_ANSWER_CONTRACT = [
 ].join('\n')
 
 /**
+ * What the thinking child must not do with its turn.
+ *
+ * The child holds the parent's permissions, so nothing stops it from turning a
+ * question into a project. One delegated thought here wrote a four-hundred-line
+ * decision document into the workspace — the parent then spent the rest of the
+ * turn finding it, reading it, and deleting it. The answer is the deliverable;
+ * the workspace belongs to the conversation that asked.
+ */
+export const THINK_CHILD_RULES = [
+  'This is a question, not a job. Your whole deliverable is the answer in your reply.',
+  'Do not create, edit, move or delete files, and do not run a command that changes the workspace. '
+  + 'The parent keeps the workspace, and anything that has to be written or edited is the parent\'s work.',
+  'Do not write the answer to a file and do not hand back a document. Answer in the reply body only.',
+].join('\n')
+
+/**
+ * Compose the instruction one thinking round receives: the round's own prompt,
+ * the rules that keep the turn a question rather than a project, and the answer
+ * contract.
+ *
+ * @param childPrompt - the prompt for this round.
+ * @returns the instruction text handed to the thinking child.
+ */
+export function composeThinkChildPrompt(childPrompt: string): string {
+  return `${childPrompt}\n\n${THINK_CHILD_RULES}\n\n${THINK_ANSWER_CONTRACT}`
+}
+
+/**
  * Read the last JSON block in a child's answer.
  *
  * The contract asks for one block at the end, but a model may write an example
@@ -580,7 +608,7 @@ export function applyThinkTool(
       ): Promise<{ projected: ThinkDeepOutput, transcript: WatchedTranscript }> => {
         const content = [{
           type: 'text',
-          text: `${childPrompt}\n\n${THINK_ANSWER_CONTRACT}`,
+          text: composeThinkChildPrompt(childPrompt),
         }] as ContentBlock[]
         if (thinkingChildId === undefined) {
           const started = await ctx.subagents.startContinuable({

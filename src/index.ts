@@ -29,7 +29,14 @@ import {
   NEEDS_CLASSIFICATION,
   NEEDS_DELEGATION,
 } from './classify.js'
-import { checkChildBudget, createChildBudget, createNoRedelegationGuard, createWebGuard } from './guard.js'
+import {
+  checkChildBudget,
+  createChildBudget,
+  createNoRedelegationGuard,
+  createThoughtOnlyGuard,
+  createWebGuard,
+  ThoughtRoute,
+} from './guard.js'
 import { DEFAULT_WATCH_MAX_CHARS } from './watch.js'
 import {
   DEFAULT_KEYWORD_AGENT_PROVIDER,
@@ -113,7 +120,13 @@ export const DELEGATION_GUIDANCE = [
   + 'judgement with mechanical work is two tasks: delegate the judgement first, with the judgement in '
   + 'the focus, and do the work yourself afterwards. A continuous edit is not a reason to reason inside '
   + 'it — "where does this part actually end, which way does the force go, which alternative is better" '
-  + 'is a question whatever else the turn is doing.',
+  + 'is a question whatever else the turn is doing. This applies to turns that are *not* routed to '
+  + 'think_deep. Once a turn is routed there, see the next rule.',
+  'Once a turn is routed to think_deep, that delegated thought carries the whole turn: the judgement, '
+  + 'every lookup it needs, and the answer itself. Your job in that turn is to present what it returned. '
+  + 'Do not search, read, edit, run a command, or start another agent afterwards — a call refused after '
+  + 'a thought is the plugin stopping you from redoing work the thought already did. Answer with its '
+  + 'conclusion, key points, assumptions and risks.',
   'Do not delegate when one grep, one file read, or one small edit answers the question on its own, when '
   + 'the next step depends entirely on the result, or when delegating would break one continuous edit '
   + 'into fragments.',
@@ -257,6 +270,13 @@ export function apply(ctx: Context, config: Config): void {
   const forkSessions = new Set<string>()
   ctx.tools.guard(createNoRedelegationGuard(forkSessions))
 
+  // A turn routed to a delegated thought has nothing left to do itself. The
+  // route is recorded when `think_deep` is dispatched and enforced for the rest
+  // of the turn: what the thought already answered is not asked again by the
+  // conversation that asked for it.
+  const thoughtRoute = new ThoughtRoute()
+  ctx.tools.guard(createThoughtOnlyGuard(thoughtRoute))
+
   // The judgement gate. The agent states its own classification; the plugin
   // makes the statement unavoidable by checking, at the point where the agent's
   // answer is finished, that the answer classified its question and — when the
@@ -315,16 +335,36 @@ export function apply(ctx: Context, config: Config): void {
     exec: ToolExecution,
     next,
   ): Promise<PreToolDecision> => {
-    if (exec.agent !== undefined) tooledThisStep.set(exec.agent, true)
+    if (exec.agent !== undefined) {
+      tooledThisStep.set(exec.agent, true)
+      // The thought is dispatched before the calls that would duplicate it, so
+      // the routing is recorded here rather than when the thought returns: a
+      // search issued in the same step as the thought must not slip through.
+      if (exec.name === 'think_deep' && exec.agent.session.header.origin !== 'subagent') {
+        thoughtRoute.begin(exec.agent.session.id)
+      }
+    }
     const denial = checkChildBudget(budget, exec)
     if (denial !== undefined) return { kind: 'deny', reason: denial }
+    return next()
+  })
+
+  // A thought that failed did not answer the turn, so the turn keeps its tools:
+  // the routing is released and the agent may recover on its own.
+  ctx.on('tools/post-execute', async (exec, result, next) => {
+    if (exec.name === 'think_deep' && result.isError && exec.agent !== undefined) {
+      thoughtRoute.clear(exec.agent.session.id)
+    }
     return next()
   })
 
   // A turn starts over: what the previous turn classified says nothing about
   // this one, and the question may be a different kind.
   ctx.on('agent/pre-step', async (payload, next) => {
-    if (payload.step === 1) gate.clear(payload.agent.session.id)
+    if (payload.step === 1) {
+      gate.clear(payload.agent.session.id)
+      thoughtRoute.clear(payload.agent.session.id)
+    }
     return next()
   })
 
