@@ -2,7 +2,7 @@
 
 给 DeepSeek Harness 用的插件：**让 AI 该查的时候去查、该想清楚的时候想清楚——而且它跑不掉。**
 
-![演示](docs/demo.gif)
+![演示](docs/demo-2026-10-30.gif)
 
 ---
 
@@ -71,7 +71,7 @@ AI 想查资料只有一条路：`search_web`。它自己直接联网会被**拒
 
 ## 这条流水线是看得见的
 
-![Agent 网络](docs/agent-network.png)
+![Agent 网络](docs/agent-network-2026-10-30.png)
 
 Harness 自带的「编队」页，把每一个出去干活的助手画成一张卡片，实时显示它用了多少上下文、跑了多久、花了多少钱。
 
