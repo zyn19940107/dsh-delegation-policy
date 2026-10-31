@@ -45,6 +45,7 @@ import {
   DEFAULT_KEYWORD_COUNT,
   DEFAULT_KEYWORD_SEARCH_CALLS,
 } from './keywords.js'
+import { applyPolicyCommand, SessionPolicy } from './policy.js'
 import {
   applySearchTool,
   DEFAULT_MAX_CHILD_CALLS,
@@ -64,9 +65,10 @@ export const name = 'delegation-policy'
 
 /**
  * Services this plugin needs: the tool registry, the delegation seam, the agent
- * registry that resolves a continuable child, and prompt assembly.
+ * registry that resolves a continuable child, prompt assembly, and the command
+ * registry the per-conversation switch is registered in.
  */
-export const inject = ['tools', 'subagents', 'systemPrompt', 'agents']
+export const inject = ['tools', 'subagents', 'systemPrompt', 'agents', 'commands']
 
 /**
  * The delegation policy, as the model should see it.
@@ -215,17 +217,23 @@ export function apply(ctx: Context, config: Config): void {
   // The tools that reach the network are read at call time: the deployment may
   // install another one, and the list is configuration rather than code.
   const webTools = (): readonly string[] => config.webTools.get()
+  // The conversations that opted out of the plugin. One conversation turning it
+  // off changes no other conversation.
+  const policy = new SessionPolicy()
 
   ctx.systemPrompt.section({
     name: 'tool:delegation-routes',
     order: ctx.systemPrompt.getSectionOrder('TOOL_SUBAGENT'),
+    // A conversation that opted out has no delegation tools in its tool table,
+    // and this guidance is written in terms of them — so the tools leaving is
+    // what takes the guidance out of the system prompt.
     text: ({ scope }) => ctx.tools.get('search_web', scope) === undefined
       && ctx.tools.get('think_deep', scope) === undefined
       ? ''
       : DELEGATION_GUIDANCE,
   })
 
-  ctx.tools.guard(createWebGuard(budget, webTools))
+  ctx.tools.guard(createWebGuard(budget, webTools, policy))
 
   // Two different rules, and confusing them is what let a thought start
   // another thought.
@@ -247,7 +255,7 @@ export function apply(ctx: Context, config: Config): void {
   // of the turn: what the thought already answered is not asked again by the
   // conversation that asked for it.
   const thoughtRoute = new ThoughtRoute()
-  ctx.tools.guard(createThoughtOnlyGuard(thoughtRoute))
+  ctx.tools.guard(createThoughtOnlyGuard(thoughtRoute, policy))
 
   // The judgement gate. The agent states its own classification; the plugin
   // makes the statement unavoidable by checking, at the point where the agent's
@@ -258,11 +266,17 @@ export function apply(ctx: Context, config: Config): void {
   applyJudgementGate(ctx, gate, {
     judgementEnabled: () => config.judgementEnabled.get(),
     judgementMaxPullbacks: () => config.judgementMaxPullbacks.get(),
+    policy,
   })
   // A turn is classified before it is delegated: once a thought is on its way,
   // the tool that would classify afterwards is closed. The rule follows the
   // gate's switch — with the gate off, nothing asks a turn to classify.
-  ctx.tools.guard(createClassifyFirstGuard(gate, () => config.judgementEnabled.get()))
+  ctx.tools.guard(createClassifyFirstGuard(gate, () => config.judgementEnabled.get(), policy))
+
+  // The switch the user reaches for inside a conversation. It runs in the UI
+  // and never reaches the model, so "turn it off for this conversation" is a
+  // decision the user makes, not one the model is asked to make.
+  applyPolicyCommand(ctx, policy)
 
   ctx.on('tools/pre-execute', async (
     exec: ToolExecution,

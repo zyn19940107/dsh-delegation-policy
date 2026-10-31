@@ -10,6 +10,7 @@
 
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import type { ToolExecution, ToolGuard } from '@deepseek-ai/dsh-tools'
+import type { SessionPolicy } from './policy.js'
 
 /**
  * The tools that reach the network.
@@ -135,16 +136,20 @@ export function releaseChildBudget(budget: ChildBudget, sessionId: string): void
  *
  * @param budget - the budget that says which children read.
  * @param webTools - the tools that reach the network.
+ * @param policy - the per-conversation state; a conversation that opted out is
+ * not governed by this rule.
  * @returns the guard.
  */
 export function createWebGuard(
   budget: ChildBudget,
   webTools: () => readonly string[],
+  policy: SessionPolicy,
 ): ToolGuard {
   return (execution) => {
     if (!webTools().includes(execution.name)) return undefined
     const agent: Agent | undefined = execution.agent
     if (agent === undefined) return undefined
+    if (!policy.appliesTo(agent.session.id)) return undefined
     if (agent.session.header.origin === 'subagent') {
       if (budget.readers.has(agent.session.id)) return undefined
       return `You are a delegated child that reasons; ${execution.name} is not your job. The knowledge `
@@ -199,13 +204,16 @@ export class ThoughtRoute {
  * are untouched: the rule is about the conversation that asked the question.
  *
  * @param route - the per-turn routing record.
+ * @param policy - the per-conversation state; a conversation that opted out is
+ * not governed by this rule.
  * @returns the guard.
  */
-export function createThoughtOnlyGuard(route: ThoughtRoute): ToolGuard {
+export function createThoughtOnlyGuard(route: ThoughtRoute, policy: SessionPolicy): ToolGuard {
   return (execution) => {
     const agent: Agent | undefined = execution.agent
     if (agent === undefined) return undefined
     if (agent.session.header.origin === 'subagent') return undefined
+    if (!policy.appliesTo(agent.session.id)) return undefined
     if (!route.has(agent.session.id)) return undefined
     if (execution.name === 'think_deep') return undefined
     return 'This turn was handed to think_deep, and that delegated thought carries the whole turn: it '

@@ -17,6 +17,7 @@ import type { Agent } from '@deepseek-ai/dsh-agent'
 import type { Context } from '@deepseek-ai/cordis'
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
 import { defineTool, type ToolExecution, type ToolGuard } from '@deepseek-ai/dsh-tools'
+import type { SessionPolicy } from './policy.js'
 
 /** What one turn has been told so far. */
 export interface TurnJudgement {
@@ -217,11 +218,14 @@ export const NEEDS_CLASSIFICATION_FIRST = 'Classify the question before you dele
  *
  * @param gate - the state the classification is recorded in.
  * @param enabled - whether the judgement gate is on.
+ * @param policy - the per-conversation state; a conversation that opted out is
+ * not governed by this rule.
  * @returns the guard.
  */
 export function createClassifyFirstGuard(
   gate: JudgementGate,
   enabled: () => boolean,
+  policy: SessionPolicy,
 ): ToolGuard {
   return (execution) => {
     if (!enabled()) return undefined
@@ -229,6 +233,7 @@ export function createClassifyFirstGuard(
     const agent: Agent | undefined = execution.agent
     if (agent === undefined) return undefined
     if (agent.session.header.origin === 'subagent') return undefined
+    if (!policy.appliesTo(agent.session.id)) return undefined
     if (gate.state(agent.session.id).classified) return undefined
     return NEEDS_CLASSIFICATION_FIRST
   }
@@ -242,6 +247,8 @@ export interface JudgementGateConfig {
   judgementEnabled: () => boolean
   /** How many times one turn may be pulled back before it is let through. */
   judgementMaxPullbacks: () => number
+  /** The per-conversation state; a conversation that opted out is not pulled back. */
+  policy: SessionPolicy
 }
 
 /**
@@ -297,6 +304,9 @@ export function applyJudgementGate(
       return
     }
     const sessionId = agent.session.id
+    // A conversation that opted out of the plugin is not governed by the gate:
+    // nothing is asking it to classify, so nothing may pull it back.
+    if (!config.policy.appliesTo(sessionId)) return
     const state = gate.state(sessionId)
     const missing = state.classified
       ? (state.verdict && !state.delegated ? NEEDS_DELEGATION : undefined)

@@ -8,6 +8,7 @@
  * pages; the parent gets the answer.
  */
 
+import { SessionPolicy } from '../src/policy.js'
 import {
   createChildBudget,
   createNoRedelegationGuard,
@@ -48,9 +49,11 @@ function execution(sessionId: string, origin: string, name: string): any {
   return { name, agent: { session: { id: sessionId, header: { origin } } } }
 }
 
+const policy = new SessionPolicy()
+
 console.log('createWebGuard')
 {
-  const guard = createWebGuard(createChildBudget(), () => DEFAULT_WEB_TOOLS)
+  const guard = createWebGuard(createChildBudget(), () => DEFAULT_WEB_TOOLS, policy)
   check('refuses web_search in the parent', guard(execution('p', 'user', 'web_search')) !== undefined)
   check('refuses web_fetch in the parent', guard(execution('p', 'user', 'web_fetch')) !== undefined)
   check('refuses read_page in the parent', guard(execution('p', 'user', 'read_page')) !== undefined)
@@ -62,7 +65,7 @@ console.log('createWebGuard')
   // reason may not — its knowledge is gathered for it.
   const budget = createChildBudget(3)
   markReader(budget, 'searcher')
-  const guard = createWebGuard(budget, () => DEFAULT_WEB_TOOLS)
+  const guard = createWebGuard(budget, () => DEFAULT_WEB_TOOLS, policy)
   check('allows a reader child to search', guard(execution('searcher', 'subagent', 'web_search')) === undefined)
   check('allows a reader child to fetch', guard(execution('searcher', 'subagent', 'web_fetch')) === undefined)
   check('allows a reader child to read a page', guard(execution('searcher', 'subagent', 'read_page')) === undefined)
@@ -71,7 +74,7 @@ console.log('createWebGuard')
   check('refuses the page read of a child that reasons', guard(execution('thinker', 'subagent', 'read_page')) !== undefined)
 }
 {
-  const guard = createWebGuard(createChildBudget(), () => DEFAULT_WEB_TOOLS)
+  const guard = createWebGuard(createChildBudget(), () => DEFAULT_WEB_TOOLS, policy)
   const denial = guard(execution('p', 'user', 'web_fetch'))
   check('points the caller at search_web', denial !== undefined && denial.includes('search_web'))
   check('names the tool it refused', denial !== undefined && denial.includes('web_fetch'))
@@ -84,9 +87,20 @@ console.log('createWebGuard')
 }
 {
   // A tool another plugin brings is covered when the deployment names it.
-  const guard = createWebGuard(createChildBudget(), () => ['web_search', 'browse'])
+  const guard = createWebGuard(createChildBudget(), () => ['web_search', 'browse'], policy)
   check('refuses a configured web tool in the parent', guard(execution('p', 'user', 'browse')) !== undefined)
   check('leaves a tool outside the configuration alone', guard(execution('p', 'user', 'x_search')) === undefined)
+}
+{
+  // A conversation that opted out of the plugin is not governed by its rules.
+  const optedOut = new SessionPolicy()
+  const guard = createWebGuard(createChildBudget(), () => DEFAULT_WEB_TOOLS, optedOut)
+  optedOut.turnOff({
+    session: { id: 'quiet', header: { origin: 'user' } },
+    ctx: { tools: { restrict: () => () => {} } },
+  } as any)
+  check('an opted-out conversation may search', guard(execution('quiet', 'user', 'web_search')) === undefined)
+  check('another conversation still may not', guard(execution('p', 'user', 'web_search')) !== undefined)
 }
 
 console.log('createNoRedelegationGuard')
@@ -130,7 +144,7 @@ console.log('createThoughtOnlyGuard')
   // routing is recorded when think_deep is dispatched, so a search issued in
   // the same step as the thought is refused rather than dispatched alongside it.
   const route = new ThoughtRoute()
-  const guard = createThoughtOnlyGuard(route)
+  const guard = createThoughtOnlyGuard(route, policy)
   check('leaves a turn alone before it routes', guard(execution('p', 'user', 'search_web')) === undefined)
   route.begin('p')
   const denial = guard(execution('p', 'user', 'search_web'))

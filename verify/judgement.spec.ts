@@ -9,6 +9,7 @@
  */
 
 import { createClassifyFirstGuard, JudgementGate, parseClassifyArgs } from '../src/classify.js'
+import { SessionPolicy } from '../src/policy.js'
 
 let failures = 0
 
@@ -99,6 +100,8 @@ check('a call without a verdict does not parse', parseClassifyArgs({ question: '
 check('a call with a blank question does not parse', parseClassifyArgs({ question: '  ', judgement: true }) === undefined)
 check('a missing reason is tolerated', parseClassifyArgs({ question: 'q', judgement: false })?.reason === '')
 
+const policy = new SessionPolicy()
+
 console.log('createClassifyFirstGuard')
 {
   // A turn is classified before it is delegated: once a thought is on its way
@@ -107,7 +110,7 @@ console.log('createClassifyFirstGuard')
   const state = new JudgementGate()
   const on = () => true
   const off = () => false
-  const guard = createClassifyFirstGuard(state, on)
+  const guard = createClassifyFirstGuard(state, on, policy)
   check('refuses a thought before the turn is classified',
     guard(execution('d1', 'user', 'think_deep')) !== undefined)
   check('leaves the other tools alone', guard(execution('d1', 'user', 'search_web')) === undefined)
@@ -119,8 +122,17 @@ console.log('createClassifyFirstGuard')
   check('says why the order matters', denial !== undefined && denial.includes('before you delegate'))
   // The rule belongs to the judgement gate: with the gate off, a turn may
   // delegate without classifying, because nothing asks it to classify.
-  const relaxed = createClassifyFirstGuard(new JudgementGate(), off)
+  const relaxed = createClassifyFirstGuard(new JudgementGate(), off, policy)
   check('the gate switch turns the rule off', relaxed(execution('d4', 'user', 'think_deep')) === undefined)
+  // A conversation that opted out of the plugin is not governed by it either.
+  const optedOut = new SessionPolicy()
+  optedOut.turnOff({
+    session: { id: 'd5', header: { origin: 'user' } },
+    ctx: { tools: { restrict: () => () => {} } },
+  } as any)
+  const quiet = createClassifyFirstGuard(new JudgementGate(), on, optedOut)
+  check('an opted-out conversation may delegate without classifying',
+    quiet(execution('d5', 'user', 'think_deep')) === undefined)
 }
 
 if (failures > 0) {
