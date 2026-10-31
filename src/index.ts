@@ -268,14 +268,6 @@ export function apply(ctx: Context, config: Config): void {
     exec: ToolExecution,
     next,
   ): Promise<PreToolDecision> => {
-    if (exec.agent !== undefined) {
-      // The thought is dispatched before the calls that would duplicate it, so
-      // the routing is recorded here rather than when the thought returns: a
-      // search issued in the same step as the thought must not slip through.
-      if (exec.name === 'think_deep' && exec.agent.session.header.origin !== 'subagent') {
-        thoughtRoute.begin(exec.agent.session.id)
-      }
-    }
     const denial = checkChildBudget(budget, exec, webTools)
     if (denial !== undefined) return { kind: 'deny', reason: denial }
     return next()
@@ -291,10 +283,10 @@ export function apply(ctx: Context, config: Config): void {
   })
 
   // A turn starts over: what the previous turn classified says nothing about
-  // this one, and the question may be a different kind.
+  // this one, and the question may be a different kind. The gate's own state
+  // is cleared by the gate itself; what is left here is the routing.
   ctx.on('agent/pre-step', async (payload, next) => {
     if (payload.step === 1) {
-      gate.clear(payload.agent.session.id)
       thoughtRoute.clear(payload.agent.session.id)
     }
     return next()
@@ -330,5 +322,8 @@ export function apply(ctx: Context, config: Config): void {
     },
   }), budget,
   (sessionId) => { gate.markDelegated(sessionId) },
-  (sessionId) => { forkSessions.add(sessionId) })
+  (sessionId) => { forkSessions.add(sessionId) },
+  // The route is recorded when the thought is actually dispatched, not before
+  // it: a call a guard refuses leaves the turn as it was.
+  (sessionId) => { thoughtRoute.begin(sessionId) })
 }

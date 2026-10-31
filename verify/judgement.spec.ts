@@ -70,6 +70,15 @@ check('the second pullback is two', gate.pullback('s2') === 2)
 check('another session has its own count', gate.pullback('s3') === 1)
 check('the count survives', gate.state('s2').pullbacks === 2)
 
+// A turn that ends is not the end of the count: a pullback is handed to the
+// agent as a message, and that message can open the next turn. A counter that
+// reset with the turn would never reach its limit.
+gate.resetTurn('s2')
+check('a new turn starts unclassified', gate.state('s2').classified === false)
+check('a new turn keeps the pullback count', gate.state('s2').pullbacks === 2)
+gate.resetPullbacks('s2')
+check('a turn that passed clears the count', gate.state('s2').pullbacks === 0)
+
 // Two sessions do not share a verdict.
 gate.markClassified('s4', true, 'judgement')
 check('a second session is unaffected', gate.state('s5').classified === false)

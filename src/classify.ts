@@ -73,8 +73,10 @@ export function parseClassifyArgs(value: unknown): ClassifyQuestionArgs | undefi
 /**
  * What one conversation has been told about the turn in progress.
  *
- * The state is kept per session and cleared when the next turn opens, so the
- * next turn starts without a classification and has to make one again.
+ * The state is kept per session. A turn starts without a classification and
+ * has to make one again; the count of pullbacks is kept until a turn passes
+ * the check, because a pullback is handed to the agent as a message and that
+ * message can open the next turn.
  */
 export class JudgementGate {
   private readonly turns = new Map<string, TurnJudgement>()
@@ -128,6 +130,41 @@ export class JudgementGate {
     const pullbacks = state.pullbacks + 1
     this.turns.set(sessionId, { ...state, pullbacks })
     return pullbacks
+  }
+
+  /**
+   * Start a new turn, keeping the count of pullbacks.
+   *
+   * The classification belongs to a turn and dies with it. The count of
+   * pullbacks does not: a pullback is handed to the agent as a message, and
+   * that message can open the next turn — so a counter that resets with the
+   * turn would never reach its limit, and a model that never classifies would
+   * be pulled back once per turn, forever.
+   *
+   * @param sessionId - the agent's session id.
+   */
+  resetTurn(sessionId: string): void {
+    const state = this.state(sessionId)
+    this.turns.set(sessionId, {
+      ...state,
+      classified: false,
+      verdict: false,
+      reason: '',
+      delegated: false,
+    })
+  }
+
+  /**
+   * Forget the count of pullbacks.
+   *
+   * The count is forgotten when a turn passes the check: the model did the
+   * thing, so the slate is clean again.
+   *
+   * @param sessionId - the agent's session id.
+   */
+  resetPullbacks(sessionId: string): void {
+    const state = this.state(sessionId)
+    this.turns.set(sessionId, { ...state, pullbacks: 0 })
   }
 
   /**
@@ -270,8 +307,10 @@ export function applyJudgementGate(
       // The state is not cleared here. A turn has one closing frame per step,
       // and a step that used a tool is not the turn's last word — clearing on
       // the first frame would make the second frame find nothing classified
-      // and pull the agent back for no reason. The state is cleared when the
-      // next turn opens.
+      // and pull the agent back for no reason. The turn's own state is cleared
+      // when the next turn opens; the count of pullbacks is cleared here,
+      // because a turn that passed is a model that did the thing.
+      gate.resetPullbacks(sessionId)
       return
     }
     // A turn that cannot classify must still be able to end. The tool is
@@ -288,8 +327,8 @@ export function applyJudgementGate(
     if (pullbacks > config.judgementMaxPullbacks()) {
       // A turn that keeps refusing to classify is let through: the gate is a
       // rule, not a trap, and a model that cannot state its conclusion must
-      // still be able to answer.
-      gate.clear(sessionId)
+      // still be able to answer. The count is kept, so the next turn is not
+      // pulled back either — until the model classifies a turn properly.
       return
     }
     agent.steer(createUserMessage({
@@ -299,10 +338,12 @@ export function applyJudgementGate(
   })
 
   // A turn starts over: what the previous turn classified says nothing about
-  // this one, and the question may be a different kind.
+  // this one, and the question may be a different kind. The count of pullbacks
+  // survives, because a pullback is often handed over as the next turn's
+  // opening message.
   ctx.on('agent/pre-step', async (payload, next) => {
     if (payload.step === 1) {
-      gate.clear(payload.agent.session.id)
+      gate.resetTurn(payload.agent.session.id)
     }
     return next()
   })

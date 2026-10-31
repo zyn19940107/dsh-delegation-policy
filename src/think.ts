@@ -401,6 +401,9 @@ async function waitForChildTurn(agent: Agent | undefined, signal: AbortSignal): 
  * recognised as one that did.
  * @param onForked - called with the session id of each thinking child, which
  * is the one kind of child allowed to start another child of its own.
+ * @param onDispatched - called with the calling agent's session id when the
+ * thought is actually dispatched. A call that a guard refused never gets here,
+ * so a turn whose delegation was refused is not treated as a routed one.
  */
 export function applyThinkTool(
   ctx: Context,
@@ -408,6 +411,7 @@ export function applyThinkTool(
   budget: ChildBudget,
   onAnswered?: (sessionId: string) => void,
   onForked?: (sessionId: string) => void,
+  onDispatched?: (sessionId: string) => void,
 ): void {
   const registered = readConfig()
   ctx.tools.register(defineTool({
@@ -452,6 +456,12 @@ export function applyThinkTool(
       if (parent === undefined) {
         throw new Error('think_deep needs an agent to delegate from')
       }
+      // The thought is on its way: the turn now belongs to it. This is
+      // recorded here and not in a pre-execute hook, because a hook runs
+      // before the guards: a call a guard refuses — a turn that delegated
+      // before it classified — would otherwise leave the turn marked as routed
+      // with no thought behind it, and every other tool closed for nothing.
+      onDispatched?.(parent.session.id)
       // The child runs with the same permissions the parent has. A delegated
       // child is a full agent: it may read, write, search and delegate, and
       // the policy that governs the parent governs it too. Restricting it
