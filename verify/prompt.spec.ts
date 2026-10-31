@@ -1,14 +1,15 @@
 /**
  * Regression tests for the prompts the pipeline builds.
  *
- * The retrieval step is the pipeline's first step: the question is answered
- * from material a child gathered, not from what the model remembers. The
- * prompts carry that material into the thinking child, and they tell the child
- * to treat it as material rather than as fact.
+ * The pipeline reasons first and grounds afterwards: the delegated child
+ * reaches a conclusion on its own, a second child names the parts of it that
+ * would have to be checked against an outside source, and the thinking child
+ * then reconsiders with that material beside its own first conclusion. The
+ * prompts carry the material across and tell the child to treat it as
+ * material rather than as fact.
  */
 
 import { buildThinkChildPrompt, composeThinkChildPrompt, formatThinkDeepOutput } from '../src/think.js'
-import { buildRefinePrompt, buildConflictSearchPrompt } from '../src/verify.js'
 import { DELEGATION_GUIDANCE } from '../src/index.js'
 
 let failures = 0
@@ -80,37 +81,6 @@ console.log('formatThinkDeepOutput')
   check('tells the parent to answer with it', text.includes('Answer the user with it'))
 }
 
-console.log('buildConflictSearchPrompt')
-{
-  const prompt = buildConflictSearchPrompt([
-    'the conclusion says the clip grips the cob at both ends; no source describes two arms',
-    'the claim that the spacing is fixed is unsupported',
-  ], 2)
-  check('carries the first problem', prompt.includes('grips the cob at both ends'))
-  check('carries the second problem', prompt.includes('the spacing is fixed is unsupported'))
-  check('asks for those points only', prompt.includes('Look up ONLY those parts'))
-  check('states the budget', prompt.includes('2 retrieval calls'))
-  check('accepts that the record settles nothing', prompt.includes('does not settle this'))
-  check('asks not to fill the gap with an inference', prompt.includes('not filled in with an inference'))
-}
-
-console.log('buildRefinePrompt')
-{
-  const prompt = buildRefinePrompt(
-    'what should we do',
-    'the old conclusion',
-    ['the source does not say that'],
-    [{ url: 'https://example.test/a', title: 'A' }],
-    { answer: 'The record does not settle this.', sources: [{ url: 'https://example.test/c' }] },
-  )
-  check('carries the objections', prompt.includes('the source does not say that'))
-  check('carries the reviewer evidence', prompt.includes('https://example.test/a'))
-  check('carries the conflict material', prompt.includes('The record does not settle this.'))
-  check('carries the conflict source', prompt.includes('https://example.test/c'))
-  check('says the material is not fact', prompt.includes('not as established fact'))
-  check('asks for a corrected conclusion', prompt.includes('corrected conclusion'))
-}
-
 console.log('DELEGATION_GUIDANCE')
 {
   check('says the agent reaches for delegation on its own', DELEGATION_GUIDANCE.includes('Reach for these on your own'))
@@ -135,6 +105,16 @@ console.log('DELEGATION_GUIDANCE')
   check('says a routed thought carries the whole turn', DELEGATION_GUIDANCE.includes('carries the whole turn'))
   check('forbids working after the thought', DELEGATION_GUIDANCE.includes('Do not search, read, edit'))
   check('says to present the delegated conclusion', DELEGATION_GUIDANCE.includes('Answer with its conclusion'))
+  // The guidance used to describe a pipeline that runs the other way round —
+  // retrieve first, then reason — and promised a subagent that refutes the
+  // conclusion. The pipeline reasons first and grounds afterwards, and the
+  // verifying child does not run by default.
+  check('does not claim the knowledge comes first', !DELEGATION_GUIDANCE.includes('retrieves the external knowledge first'))
+  check('does not promise a refuting subagent', !DELEGATION_GUIDANCE.includes('tries to refute'))
+  check('states the order the pipeline runs in', DELEGATION_GUIDANCE.includes('reasons first'))
+  // Every turn classifies its question: the gate pulls back a turn that ends
+  // without one, whatever the question looks like.
+  check('says every turn classifies', DELEGATION_GUIDANCE.includes('Every turn'))
 }
 
 console.log(failures === 0 ? '\nall checks passed' : `\n${failures} check(s) failed`)

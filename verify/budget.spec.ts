@@ -77,12 +77,13 @@ console.log('checkChildBudget')
   check('does not charge the parent twice', checkChildBudget(budget, execution('parent', 'user', 'web_search')) === undefined)
 }
 {
-  // A tool that is not a retrieval call is not charged.
+  // A tool that is not a reading call is not charged. `read_page` pulls a page
+  // into the child's context, so it is a reading call like the other two.
   const budget = createChildBudget(1)
   registerChild(budget, 'child-2', 1)
-  check('does not charge a non-retrieval call', checkChildBudget(budget, execution('child-2', 'subagent', 'read_page')) === undefined)
-  check('still charges the retrieval call', checkChildBudget(budget, execution('child-2', 'subagent', 'web_fetch')) === undefined)
-  check('denies the second retrieval call', checkChildBudget(budget, execution('child-2', 'subagent', 'web_fetch')) !== undefined)
+  check('does not charge a non-retrieval call', checkChildBudget(budget, execution('child-2', 'subagent', 'read')) === undefined)
+  check('charges read_page as a reading call', checkChildBudget(budget, execution('child-2', 'subagent', 'read_page')) === undefined)
+  check('denies the second reading call', checkChildBudget(budget, execution('child-2', 'subagent', 'web_fetch')) !== undefined)
 }
 {
   // A released child stops being charged.

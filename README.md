@@ -89,9 +89,8 @@ Harness 自带的「编队」页，把每一个出去干活的助手画成一张
 | `Look up the following terms…` | 查资料的 | 跟着主 AI |
 | `Search the web for: …` | 搜索助手 | 跟着主 AI |
 
-> **曾经还有一个"抬杠助手"**，专门去挑结论的毛病，挑出来就再查一次、再改一轮。
-> 现在**默认没有它了**——上面第 4 步已经在干同样的活，而且干得更好：它读的是孩子的**完整推理**，能挖出该搜什么；抬杠助手只看到结论，还得自己再挖一遍，而且经常交不出卷。
-> 唯一它能抓到而别的抓不到的，是"引用了来源，但引的不是这一条"这类毛病。想把它加回来，把配置里的 `verifyRounds` 改成 `1` 或 `2` 就行。
+> **以前还有一个"抬杠助手"**，专门去挑结论的毛病。它已经被整个删掉了：它只看到结论，还得自己再挖一遍该查什么，而且经常交不出卷；上面第 4 步读的是孩子的**完整推理**，挖得出来。
+> 结论由**同一个孩子**拿着资料重想一遍定稿，中间不再有第三个声音。
 
 ---
 
@@ -156,7 +155,11 @@ Harness 自带的「编队」页，把每一个出去干活的助手画成一张
 ## 装上
 
 ```sh
+# 跟着最新版走
 dsh plugin add github:zyn19940107/dsh-delegation-policy
+
+# 或者钉住 1.0 这一版
+dsh plugin add github:zyn19940107/dsh-delegation-policy#v1.0.0
 ```
 
 或者从本地装：
@@ -187,7 +190,6 @@ dsh plugin add /path/to/dsh-delegation-policy
         judgementEnabled: true             # 要不要强制判断题走委派
         judgementMaxPullbacks: 2           # 最多拽回几次
         watchMaxChars: 8000                # 旁听能记下多少字
-        verifyRounds: 0                    # 抬杠助手跑几轮（0 = 不跑）
 ```
 
 **挑关键词的助手默认跟主 AI 用同一个模型**。想单独指定，再加 `keywordModel` + `keywordModelProvider` 两行。

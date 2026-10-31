@@ -11,10 +11,8 @@
  */
 
 import {
-  normalizeEvidence,
   projectSearchResult,
   projectThinkResult,
-  projectVerdict,
   readFinalText,
   type DelegatedResult,
 } from '../src/project.js'
@@ -117,57 +115,6 @@ console.log('projectSearchResult')
   }
   check('throws when the run produced nothing', thrown instanceof Error)
 }
-
-console.log('projectVerdict')
-{
-  const projected = projectVerdict({
-    structured: { verdict: 'confirmed', problems: [], evidence: [{ url: 'https://a.example', title: 'A' }] },
-    output: [],
-    stopReason: 'completed',
-  })
-  check('confirms a clean verdict', projected.verdict === 'confirmed')
-  check('reads the evidence', projected.evidence.length === 1)
-}
-{
-  // A verdict that says confirmed while listing problems is a contradiction;
-  // the problems win.
-  const projected = projectVerdict({
-    structured: { verdict: 'confirmed', problems: ['the corn part is unsupported'], evidence: [] },
-    output: [],
-    stopReason: 'completed',
-  })
-  check('treats problems as a conflict', projected.verdict === 'conflict')
-  check('keeps the problems', projected.problems.length === 1)
-}
-{
-  const projected = projectVerdict({
-    structured: { verdict: 'conflict', problems: ['p1', 'p2'], evidence: [] },
-    output: [],
-    stopReason: 'completed',
-  })
-  check('reports a conflict', projected.verdict === 'conflict')
-  check('keeps every problem', projected.problems.length === 2)
-}
-{
-  // A verifier that answered in prose delivered no verdict. That is not a
-  // confirmation: it is reported as a conflict with the prose as the problem.
-  const projected = projectVerdict(proseResult('the conclusion overstates the source'))
-  check('treats a prose verdict as a conflict', projected.verdict === 'conflict')
-  check('keeps the prose as the problem', projected.problems[0] === 'the conclusion overstates the source')
-}
-{
-  let thrown: unknown
-  try {
-    projectVerdict({ structured: undefined, output: [], stopReason: 'error' })
-  } catch (error) {
-    thrown = error
-  }
-  check('throws when the verifier produced nothing', thrown instanceof Error)
-}
-
-console.log('normalizeEvidence')
-check('drops an entry without a url', normalizeEvidence({ evidence: [{ title: 'no url' }] }).length === 0)
-check('keeps a url entry', normalizeEvidence({ evidence: [{ url: 'https://a.example' }] }).length === 1)
 
 console.log(failures === 0 ? '\nall checks passed' : `\n${failures} check(s) failed`)
 process.exit(failures === 0 ? 0 : 1)

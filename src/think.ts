@@ -15,16 +15,13 @@ import type { Agent } from '@deepseek-ai/dsh-agent'
 import type { ContentBlock } from '@deepseek-ai/dsh-llm'
 import type {} from '@deepseek-ai/dsh-subagent'
 import { defineTool } from '@deepseek-ai/dsh-tools'
-import type { ObjectJsonSchema } from '@deepseek-ai/dsh-tools'
-import { registerChild, releaseChildBudget, type ChildBudget } from './guard.js'
+import { releaseChildBudget, type ChildBudget } from './guard.js'
 import { delegateSearch, type SearchConfig } from './search.js'
 import {
   buildKeywordSearchPrompt,
-  dropAlreadySearched,
   runKeywordExtractor,
   type KeywordConfig,
 } from './keywords.js'
-import { buildConflictSearchPrompt, buildRefinePrompt, runVerifier } from './verify.js'
 import { trimTranscript, watchChildStream, type WatchedTranscript } from './watch.js'
 
 /** Provider that runs the thinking child. */
@@ -32,17 +29,6 @@ export const DEFAULT_THINK_PROVIDER = 'fork'
 
 /** Default number of retrieval calls the thinking child may make. */
 export const DEFAULT_MAX_THINK_CALLS = 5
-
-/** Default number of retrieval calls the retrieving child may make. */
-export const DEFAULT_RETRIEVE_MAX_CHILD_CALLS = 3
-
-/**
- * Default retrieval calls a pass aimed at the contradictions may make.
- *
- * The pass looks up the specific points a reviewer could not support, so it needs
- * far fewer calls than a first pass over the subject.
- */
-export const DEFAULT_CONFLICT_SEARCH_CALLS = 2
 
 /**
  * Default budget for one delegated thought. The child inherits the parent's
@@ -52,58 +38,57 @@ export const DEFAULT_CONFLICT_SEARCH_CALLS = 2
 export const DEFAULT_THINK_TIMEOUT_MS = 900_000
 
 /**
- * The structured result the thinking child delivers. The child calls the
- * runtime's `structured_output` tool with this schema; the driver validates
- * the value and hands it back as the run's structured result.
+ * The structured result the parent receives from `think_deep`.
+ *
+ * What the parent gets is the delegated answer: the conclusion and the points,
+ * the assumptions and the risks that carry it. The knowledge the pipeline
+ * retrieved along the way stays inside the pipeline: it was gathered to change
+ * the thinking, and handing it to the parent as well would give the parent a
+ * corpus it did not ask for and a second account of the same facts.
+ *
+ * Every section is present. The delegated child reports all four, and a
+ * section it left empty reads as an empty list.
  */
-export const THINK_OUTPUT_SCHEMA: ObjectJsonSchema = {
+export const THINK_OUTPUT_SCHEMA = {
   type: 'object',
   additionalProperties: false,
-  // Only the conclusion is required. A child that reports fewer sections is
-  // still a usable answer; the missing ones read as empty.
-  required: ['conclusion'],
   properties: {
     conclusion: {
       type: 'string',
+      required: true,
       description: 'The recommended answer, stated directly.',
     },
     keyPoints: {
       type: 'array',
+      required: true,
       description: 'The points that carry the conclusion.',
       items: { type: 'string' },
     },
     assumptions: {
       type: 'array',
+      required: true,
       description: 'What the conclusion rests on that could be wrong.',
       items: { type: 'string' },
     },
     risks: {
       type: 'array',
+      required: true,
       description: 'What would make the conclusion fail, and when.',
       items: { type: 'string' },
     },
   },
-}
+} as const
 
 /** Model-facing `think_deep` arguments. */
 interface ThinkDeepArgs {
   task: string
   focus?: string
-  verify?: boolean
 }
 
 /** What the pipeline retrieved before the thinking started. */
 export interface RetrievedKnowledge {
   answer: string
   sources: { url: string, title?: string }[]
-}
-
-/** What the verification passes found. */
-export interface ThinkVerification {
-  rounds: number
-  verdict: 'confirmed' | 'conflict'
-  problems: string[]
-  evidence: { url: string, title?: string, snippet?: string }[]
 }
 
 /**
@@ -119,19 +104,12 @@ interface ThinkDeepOutput {
   keyPoints: string[]
   assumptions: string[]
   risks: string[]
-  verification?: ThinkVerification
 }
 
 /** Thinking route configuration. */
 export interface ThinkConfig {
   provider: string
-  maxChildCalls: number
   timeoutMs: number
-  verifyRounds: number
-  verifyProvider: string
-  verifyTimeoutMs: number
-  /** Retrieval calls a pass aimed at the contradictions may make. */
-  conflictSearchCalls: number
   /** The extractor that names what a conclusion would have to be checked against. */
   keywords: KeywordConfig
   /** Retrieval calls the grounding pass may make. */
@@ -154,7 +132,6 @@ export function parseThinkDeepArgs(args: ThinkDeepArgs): ThinkDeepArgs {
   return {
     task: args.task,
     ...args.focus !== undefined ? { focus: args.focus } : {},
-    ...args.verify !== undefined ? { verify: args.verify } : {},
   }
 }
 
@@ -178,7 +155,6 @@ export function buildRethinkPrompt(
   conclusion: string,
   keyPoints: readonly string[],
   retrieved: { answer: string, sources: { url: string, title?: string }[] },
-  alreadySearched: readonly string[] = [],
 ): string {
   return [
     'You reached the conclusion below by reasoning about a question. Parts of it would have to be '
@@ -193,15 +169,6 @@ export function buildRethinkPrompt(
     '',
     ...keyPoints.length > 0
       ? ['The points that carried it:', ...keyPoints.map((point) => `- ${point}`), '']
-      : [],
-    ...alreadySearched.length > 0
-      ? [
-        'What has already been looked up — do not look it up again:',
-        ...alreadySearched.map((item) => `- ${item}`),
-        'Anything here that the material below does not settle is still unsettled. Do not go and search '
-        + 'it a second time; say that it is unsettled.',
-        '',
-      ]
       : [],
     'What the sources say:',
     '---',
@@ -236,24 +203,8 @@ export function formatThinkDeepOutput(value: ThinkDeepOutput): string {
   if (value.risks.length > 0) {
     parts.push(`Risks:\n${value.risks.map((item) => `- ${item}`).join('\n')}`)
   }
-  if (value.verification !== undefined) {
-    const { rounds, verdict, problems, evidence } = value.verification
-    const head = verdict === 'confirmed'
-      ? `Verified against ${evidence.length} source(s) over ${rounds} pass(es): no unsupported part found.`
-      : `Verification found ${problems.length} unsupported part(s) over ${rounds} pass(es).`
-    const lines = [head]
-    if (problems.length > 0) {
-      lines.push(`Problems:\n${problems.map((problem) => `- ${problem}`).join('\n')}`)
-    }
-    if (evidence.length > 0) {
-      lines.push(`Verification sources:\n${
-        evidence.map((item) => `- [${item.title ?? item.url}](${item.url})`).join('\n')
-      }`)
-    }
-    parts.push(lines.join('\n'))
-  }
   parts.push(
-    'This is the delegated answer, already reasoned over and checked. Answer the user with it: '
+    'This is the delegated answer, already reasoned over. Answer the user with it: '
     + 'state the conclusion as your own answer, and keep the key points, the assumptions and the '
     + 'risks as they are given.',
   )
@@ -284,8 +235,9 @@ export function buildThinkChildPrompt(
     'You have the full context of this conversation, including everything already established and every '
     + 'earlier conclusion. Use it: check the premises, weigh the alternatives, and build on what is '
     + 'already settled instead of re-deriving it.',
-    'Your job is to think, not to look things up. The external knowledge this question needs is '
-    + 'gathered for you and arrives with the material; the retrieval is not your task.',
+    'Your job is to think, not to look things up. The external knowledge this question needs is looked '
+    + 'up for you, in its own child, and comes back to you in a second round; the retrieval is not your '
+    + 'task.',
   )
   parts.push(
     'Give a recommendation, not a survey. Say plainly when the evidence does not settle the question, '
@@ -464,15 +416,16 @@ export function applyThinkTool(
   ctx.tools.register(defineTool({
     name: 'think_deep',
     description: 'Delegate a hard question to a subagent that inherits this conversation and reasons over '
-      + 'it at length. The pipeline retrieves the external knowledge first, in its own child, so the '
-      + 'reasoning starts from material rather than from memory; a second subagent then tries to refute '
-      + 'the conclusion. Use it whenever the question asks for a judgement — a recommendation, a '
-      + 'comparison, a trade-off, a design, a risk analysis — and not only for a fact; the user need not '
-      + 'ask for it. A task that mixes a judgement with mechanical work is two tasks: delegate the '
-      + 'judgement first, with the judgement in the focus, and do the work afterwards — a continuous edit '
-      + 'is not a reason to reason inside it. It returns a structured conclusion — recommendation, key '
-      + 'points, assumptions, and risks — with what was retrieved and a verification record, while the '
-      + 'reasoning stays in the child.',
+      + 'it at length. The delegated child reasons first; a second subagent reads that reasoning and '
+      + 'names the parts that would have to be checked against an outside source; a third subagent looks '
+      + 'up exactly those; and the same thinking child then reconsiders with the retrieved material '
+      + 'beside its own first conclusion. Use it whenever the question asks for a judgement — a '
+      + 'recommendation, a comparison, a trade-off, a design, a risk analysis — and not only for a fact; '
+      + 'the user need not ask for it. A task that mixes a judgement with mechanical work is two tasks: '
+      + 'delegate the judgement first, with the judgement in the focus, and do the work afterwards — a '
+      + 'continuous edit is not a reason to reason inside it. It returns a structured conclusion — '
+      + 'recommendation, key points, assumptions, and risks — while the reasoning and the retrieved '
+      + 'material stay in the child.',
     parameters: {
       task: {
         type: 'string',
@@ -483,94 +436,17 @@ export function applyThinkTool(
         type: 'string',
         description: 'What the conclusion must settle, when the task is broader than the question.',
       },
-      verify: {
-        type: 'boolean',
-        description: 'Set false to skip the verification pass. Verification costs one more subagent and '
-          + 'one more round trip; it is what catches a conclusion the sources do not support.',
-      },
     },
     output: {
-      schema: {
-        type: 'object',
-        additionalProperties: false,
-        properties: {
-          conclusion: { type: 'string', required: true },
-          keyPoints: { type: 'array', required: true, items: { type: 'string' } },
-          assumptions: { type: 'array', required: true, items: { type: 'string' } },
-          risks: { type: 'array', required: true, items: { type: 'string' } },
-          conflictRetrieved: {
-            type: 'object',
-            additionalProperties: false,
-            properties: {
-              answer: { type: 'string', required: true },
-              sources: {
-                type: 'array',
-                required: true,
-                items: {
-                  type: 'object',
-                  additionalProperties: false,
-                  properties: {
-                    url: { type: 'string', required: true },
-                    title: { type: 'string' },
-                  },
-                },
-              },
-            },
-          },
-          keywords: { type: 'array', items: { type: 'string' } },
-          keywordRetrieved: {
-            type: 'object',
-            additionalProperties: false,
-            properties: {
-              answer: { type: 'string', required: true },
-              sources: {
-                type: 'array',
-                required: true,
-                items: {
-                  type: 'object',
-                  additionalProperties: false,
-                  properties: {
-                    url: { type: 'string', required: true },
-                    title: { type: 'string' },
-                  },
-                },
-              },
-            },
-          },
-          verification: {
-            type: 'object',
-            additionalProperties: false,
-            properties: {
-              rounds: { type: 'number', required: true },
-              verdict: { type: 'string', required: true, enum: ['confirmed', 'conflict'] },
-              problems: { type: 'array', required: true, items: { type: 'string' } },
-              evidence: {
-                type: 'array',
-                required: true,
-                items: {
-                  type: 'object',
-                  additionalProperties: false,
-                  properties: {
-                    url: { type: 'string', required: true },
-                    title: { type: 'string' },
-                    snippet: { type: 'string' },
-                  },
-                },
-              },
-            },
-          },
-        },
-      },
+      schema: THINK_OUTPUT_SCHEMA,
       render: (_args, value) => [{ type: 'text', text: formatThinkDeepOutput(value as ThinkDeepOutput) }],
     },
     // A delegated thought is a foreground operation on the parent's behalf.
-    // Its deadline covers the whole pipeline: the retrieving child, then one
-    // thinking child, then a verifier per round, and a retrieval pass aimed at
-    // the contradictions whenever a verifier found any.
+    // Its deadline covers the whole pipeline: the thinking child, the
+    // extractor that reads what it wrote, and the retrieval pass that looks up
+    // what the extractor named.
     isConcurrencySafe: () => false,
-    timeoutMs: registered.timeoutMs
-      + registered.verifyTimeoutMs * Math.max(1, registered.verifyRounds)
-      + (registered.conflictSearchCalls > 0 ? registered.search.timeoutMs : 0),
+    timeoutMs: registered.timeoutMs,
     async execute(args, exec) {
       const config = readConfig()
       const parsed = parseThinkDeepArgs(args as ThinkDeepArgs)
@@ -583,7 +459,6 @@ export function applyThinkTool(
       // the policy that governs the parent governs it too. Restricting it
       // would be a rule the user never asked for, and it would make the
       // child's answer weaker than the question deserved.
-      const maxRounds = parsed.verify === false ? 0 : config.verifyRounds
 
       // No retrieval happens here. The thinking child is a fork: it inherits
       // this conversation, including anything the parent already searched for,
@@ -618,7 +493,10 @@ export function applyThinkTool(
             signal: exec.signal,
           })
           thinkingChildId = started.childId
-          registerChild(budget, started.childId, config.maxChildCalls)
+          // The thinking child is not a reader: the web guard refuses it every
+          // page-fetching tool, so it has no reading budget to carry. The
+          // knowledge it reasons over arrives with the material.
+          //
           // The thinking child may start a child of its own: it reasons over
           // this conversation and may want a child's help to settle a point.
           // Every other child this plugin starts may not.
@@ -640,14 +518,13 @@ export function applyThinkTool(
         }
       }
 
-      let prompt = buildThinkChildPrompt(parsed.task, parsed.focus)
+      const prompt = buildThinkChildPrompt(parsed.task, parsed.focus)
       const first = await runThinking(prompt)
-      let projected = first.projected
+      const projected = first.projected
       let conclusion = projected.conclusion
       let keyPoints = projected.keyPoints
       let assumptions = projected.assumptions
       let risks = projected.risks
-      let verification: ThinkVerification | undefined
 
       // The grounding pass: what in the delegated child's own work would have
       // to be checked against an outside source, looked up before the
@@ -656,17 +533,11 @@ export function applyThinkTool(
       const extracted = await runKeywordExtractor(
         ctx,
         config.keywords,
-        budget,
         parent,
         exec.signal,
         trimTranscript(first.transcript, config.watchMaxChars),
       )
-      // The child may have looked things up while it reasoned. Those lookups
-      // are not in the parent's context, so the pipeline cannot see them by
-      // itself — the extractor reports them, and the terms it names are not
-      // searched again.
-      const alreadySearched = extracted.alreadySearched
-      const fresh = dropAlreadySearched(extracted.keywords, alreadySearched)
+      const fresh = extracted.keywords
       let keywordRetrieved: RetrievedKnowledge | undefined
       if (fresh.length > 0) {
         const projection = await delegateSearch(
@@ -688,64 +559,12 @@ export function applyThinkTool(
       }
       if (keywordRetrieved !== undefined) {
         const rethought = await runThinking(
-          buildRethinkPrompt(parsed.task, conclusion, keyPoints, keywordRetrieved, alreadySearched),
+          buildRethinkPrompt(parsed.task, conclusion, keyPoints, keywordRetrieved),
         )
         conclusion = rethought.projected.conclusion
         keyPoints = rethought.projected.keyPoints
         assumptions = rethought.projected.assumptions
         risks = rethought.projected.risks
-      }
-
-      let conflictRetrieved: RetrievedKnowledge | undefined
-      for (let round = 1; round <= Math.max(1, maxRounds); round++) {
-        if (maxRounds === 0) break
-        // The verifier is a separate child with a clean context and an
-        // adversarial role: it is handed the conclusion and asked to refute it.
-        const verdict = await runVerifier(
-          ctx,
-          { provider: config.verifyProvider, timeoutMs: config.verifyTimeoutMs },
-          budget,
-          parent,
-          exec.signal,
-          conclusion,
-          keyPoints,
-          parsed.task,
-          config.maxChildCalls,
-        )
-        verification = {
-          rounds: round,
-          verdict: verdict.verdict,
-          problems: verdict.problems,
-          evidence: verdict.evidence,
-        }
-        if (verdict.verdict !== 'conflict') break
-        if (round >= maxRounds) break
-        // The problems name the exact parts of the conclusion that failed, so
-        // the retrieval pass looks those up instead of re-reading the subject
-        // the first pass already covered.
-        const conflictSearch = await delegateSearch(
-          ctx,
-          config.search,
-          budget,
-          parent,
-          exec.signal,
-          buildConflictSearchPrompt(verdict.problems, config.conflictSearchCalls),
-          config.conflictSearchCalls,
-        )
-        conflictRetrieved = {
-          answer: conflictSearch.answer,
-          sources: conflictSearch.sources.map((source) => ({
-            url: source.url,
-            ...source.title === undefined ? {} : { title: source.title },
-          })),
-        }
-        prompt = buildRefinePrompt(
-          parsed.task,
-          conclusion,
-          verdict.problems,
-          verdict.evidence,
-          conflictRetrieved,
-        )
       }
 
       // The turn has been answered by a delegated thought, so a turn that was
@@ -765,7 +584,6 @@ export function applyThinkTool(
         keyPoints,
         assumptions,
         risks,
-        ...verification !== undefined ? { verification } : {},
       }
     },
     presentCall: (args) => {

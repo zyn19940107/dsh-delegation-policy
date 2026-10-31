@@ -20,10 +20,6 @@
         thinkProvider: fork
         maxThinkCalls: 5
         thinkTimeoutMs: 900000
-        verifyRounds: 0
-        verifyProvider: spawn
-        verifyTimeoutMs: 600000
-        conflictSearchCalls: 2
         keywordAgentProvider: spawn
         keywordMaxCount: 3
         keywordSearchCalls: 3

@@ -12,9 +12,11 @@
  * - The generic `subagent` / `subagent_fork` — for self-contained work that
  *   needs none of the above.
  *
- * Two rules are enforced at the point where a call is decided rather than
- * asked for in a prompt: a direct `web_search` is refused outside a
- * delegation, and every delegated child has a retrieval budget.
+ * Five rules are enforced at the point where a call is decided rather than
+ * asked for in a prompt: a direct web tool is refused outside a delegation, a
+ * delegated child that reasons may not fetch pages, every delegated child has
+ * a reading budget, a turn handed to a delegated thought may do nothing else,
+ * and a turn that ends without classifying its question is pulled back.
  *
  * @module @local/dsh-delegation-policy
  */
@@ -52,19 +54,11 @@ import {
   DEFAULT_SEARCH_TIMEOUT_MS,
 } from './search.js'
 import {
-  DEFAULT_CONFLICT_SEARCH_CALLS,
-} from './think.js'
-import {
   applyThinkTool,
   DEFAULT_MAX_THINK_CALLS,
   DEFAULT_THINK_PROVIDER,
   DEFAULT_THINK_TIMEOUT_MS,
 } from './think.js'
-import {
-  DEFAULT_VERIFY_PROVIDER,
-  DEFAULT_VERIFY_ROUNDS,
-  DEFAULT_VERIFY_TIMEOUT_MS,
-} from './verify.js'
 
 /** Cordis plugin name used by loader diagnostics. */
 export const name = 'delegation-policy'
@@ -79,11 +73,10 @@ export const inject = ['tools', 'subagents', 'systemPrompt', 'agents']
  * The delegation policy, as the model should see it.
  *
  * The two dedicated tools carry constraints the generic delegation tools do
- * not — a clean context, a reading budget, a conclusion-only result, a
- * verification pass — so they are the default for the two shapes of work they
- * cover. The policy says when to reach for each route and when not to delegate
- * at all, so that delegation is the agent's own judgement rather than something
- * the user has to ask for.
+ * not — a clean context, a reading budget, a conclusion-only result — so they
+ * are the default for the two shapes of work they cover. The policy says when
+ * to reach for each route and when not to delegate at all, so that delegation
+ * is the agent's own judgement rather than something the user has to ask for.
  *
  * This text is part of the system prompt and is re-sent every turn, so it
  * stays as short as the policy allows.
@@ -96,20 +89,22 @@ export const DELEGATION_GUIDANCE = [
   + 'direct page fetch is refused here, and the subagent is the one that reads the pages. Before '
   + 'searching, check what the local source already answers: for a question about this codebase or the '
   + 'running runtime, the installed source is more authoritative than any published document.',
-  '- think_deep: a hard question delegated to a subagent that inherits this conversation, reasons over '
-  + 'it at length, and is then checked by a second subagent that tries to refute the conclusion. Use it '
-  + 'whenever the question asks for a judgement — a recommendation, a comparison, a trade-off, a design, '
-  + 'a risk analysis — and not only for a fact. Judging from your own reading is where a small model is '
-  + 'weakest; the second opinion and the verification pass are what make the answer trustworthy. The '
-  + 'pipeline retrieves the external knowledge first, in its own child, so the reasoning starts from '
-  + 'material rather than from memory. It returns a structured conclusion with what was retrieved and a '
-  + 'verification record.',
+  '- think_deep: a hard question delegated to a subagent that inherits this conversation and reasons over '
+  + 'it at length. Use it whenever the question asks for a judgement — a recommendation, a comparison, '
+  + 'a trade-off, a design, a risk analysis — and not only for a fact. Judging from your own reading is '
+  + 'where a small model is weakest, so the judgement goes to a subagent that already holds everything '
+  + 'this conversation established. It works in this order: the delegated child reasons first; a second '
+  + 'subagent reads that reasoning and names the parts that would have to be checked against an outside '
+  + 'source; a third subagent looks up exactly those; and the same thinking child then reconsiders with '
+  + 'the retrieved material beside its own first conclusion. It returns a structured conclusion — '
+  + 'recommendation, key points, assumptions, risks — while the reasoning and the retrieved material stay '
+  + 'inside the pipeline.',
   '- subagent: a fresh subagent for a self-contained task that needs neither of the above.',
   '- classify_question: state whether the question you are answering is a judgement — a recommendation, a '
-  + 'comparison, a trade-off, a design, a risk analysis, or a "what should we do" — and why. Call it before '
-  + 'you answer a question whose answer you are not sure how to settle: a judgement is answered by '
-  + 'delegating it to think_deep, and anything else is answered here. Your own conclusion decides the '
-  + 'route, so state the one you actually hold.',
+  + 'comparison, a trade-off, a design, a risk analysis, or a "what should we do" — and why. Every turn '
+  + 'classifies its question before it may end: a judgement is answered by delegating it to think_deep, '
+  + 'and anything else is answered here. Your own conclusion decides the route, so state the one you '
+  + 'actually hold.',
   'These are the rules for delegation. Do not go looking for them elsewhere — not in a policy document, '
   + 'not in a README, not in this plugin\'s source: the tools are already in your tool table and the '
   + 'rules are already here.',
@@ -157,26 +152,16 @@ export interface Config {
   maxSources: Volatile<number>
   /** Excerpt budget per source. */
   maxSnippetChars: Volatile<number>
-  /** Retrieval calls the search child may make. */
+  /** Retrieval calls a child that reads pages may make: the search child and the grounding child. */
   maxChildCalls: Volatile<number>
   /** Budget for one delegated search, in milliseconds. */
   searchTimeoutMs: Volatile<number>
   /** Provider that runs the thinking child. */
   thinkProvider: Volatile<string>
-  /** Retrieval calls the thinking child may make. */
+  /** Retrieval calls a delegated child this plugin did not start may make. */
   maxThinkCalls: Volatile<number>
   /** Budget for one delegated thought, in milliseconds. */
   thinkTimeoutMs: Volatile<number>
-  /** Verification passes a delegated thought may run. */
-  verifyRounds: Volatile<number>
-  /** Provider that runs the verifier. */
-  verifyProvider: Volatile<string>
-  /** Budget for one verification pass, in milliseconds. */
-  verifyTimeoutMs: Volatile<number>
-  /** Whether a delegated thought retrieves before it reasons. */
-  retrieveFirst: Volatile<boolean>
-  /** Retrieval calls a pass aimed at the contradictions may make. */
-  conflictSearchCalls: Volatile<number>
   /** The extractor that names what a conclusion would have to be checked against. */
   keywordAgentProvider: Volatile<string>
   /** The model provider the extractor runs on; the parent's when unset. */
@@ -204,10 +189,6 @@ export const Config = z.object({
   thinkProvider: z.string().default(DEFAULT_THINK_PROVIDER).volatile(),
   maxThinkCalls: z.number().step(1).min(1).default(DEFAULT_MAX_THINK_CALLS).volatile(),
   thinkTimeoutMs: z.number().step(1).min(1).default(DEFAULT_THINK_TIMEOUT_MS).volatile(),
-  verifyRounds: z.number().step(1).min(0).default(DEFAULT_VERIFY_ROUNDS).volatile(),
-  verifyProvider: z.string().default(DEFAULT_VERIFY_PROVIDER).volatile(),
-  verifyTimeoutMs: z.number().step(1).min(1).default(DEFAULT_VERIFY_TIMEOUT_MS).volatile(),
-  conflictSearchCalls: z.number().step(1).min(0).default(DEFAULT_CONFLICT_SEARCH_CALLS).volatile(),
   keywordAgentProvider: z.string().default(DEFAULT_KEYWORD_AGENT_PROVIDER).volatile(),
   keywordModelProvider: z.string().volatile(),
   keywordModel: z.string().volatile(),
@@ -378,12 +359,7 @@ export function apply(ctx: Context, config: Config): void {
 
   applyThinkTool(ctx, () => ({
     provider: config.thinkProvider.get(),
-    maxChildCalls: config.maxThinkCalls.get(),
     timeoutMs: config.thinkTimeoutMs.get(),
-    verifyRounds: config.verifyRounds.get(),
-    verifyProvider: config.verifyProvider.get(),
-    verifyTimeoutMs: config.verifyTimeoutMs.get(),
-    conflictSearchCalls: config.conflictSearchCalls.get(),
     keywords: {
       agentProvider: config.keywordAgentProvider.get(),
       ...config.keywordModelProvider.get() === undefined
@@ -391,7 +367,6 @@ export function apply(ctx: Context, config: Config): void {
         : { modelProvider: config.keywordModelProvider.get() },
       ...config.keywordModel.get() === undefined ? {} : { model: config.keywordModel.get() },
       maxKeywords: config.keywordMaxCount.get(),
-      maxChildCalls: config.maxChildCalls.get(),
     },
     keywordSearchCalls: config.keywordSearchCalls.get(),
     watchMaxChars: config.watchMaxChars.get(),

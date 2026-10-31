@@ -11,8 +11,14 @@
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import type { ToolExecution, ToolGuard } from '@deepseek-ai/dsh-tools'
 
-/** Tools whose calls count against a child's retrieval budget. */
-export const RETRIEVAL_TOOLS: readonly string[] = ['web_search', 'web_fetch']
+/**
+ * Tools whose calls count against a child's reading budget.
+ *
+ * `read_page` is here as well: it pulls a page into the child's context, so
+ * it is a reading call like the other two. Leaving it out would have given a
+ * reader child a way around the budget.
+ */
+export const RETRIEVAL_TOOLS: readonly string[] = ['web_search', 'web_fetch', 'read_page']
 
 /**
  * Web tools the parent conversation may not call.
@@ -32,7 +38,7 @@ export const PARENT_DENIED_WEB_TOOLS: readonly string[] = ['web_search', 'web_fe
  * not a policy.
  */
 export interface ChildBudget {
-  /** Children whose job is to read pages: the search and verifying children. */
+  /** Children whose job is to read pages: the search children. */
   readonly readers: Set<string>
   /** Retrieval calls already made, per child session. */
   readonly calls: Map<string, number>
@@ -117,10 +123,13 @@ export function releaseChildBudget(budget: ChildBudget, sessionId: string): void
 }
 
 /**
- * Refuse a direct call to a web tool from anything but a delegated subagent.
+ * Refuse a direct call to a web tool from anything but a delegated child that
+ * reads pages.
  *
  * A subagent's own session header records `origin: 'subagent'`, which is what
  * separates a delegation's own child from the conversation that asked for it.
+ * Among those children, only the ones registered as readers may fetch pages:
+ * a child that reasons is given the material it needs instead.
  *
  * Every tool that can pull a page into the parent is refused, not only the
  * one that searches. A search the parent did itself is only half the problem:

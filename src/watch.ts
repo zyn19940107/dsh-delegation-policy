@@ -64,8 +64,9 @@ export function trimTranscript(transcript: WatchedTranscript, maxChars: number):
  * Watch one child's stream.
  *
  * A child that runs out of process has no stream to watch, and the watcher
- * then watches nothing: the extractor is given nothing, which is the same
- * position it was in before the watch existed.
+ * then watches nothing. The transcript the extractor is given is empty, and
+ * so is the answer the pipeline reads from it — the delegated thought's
+ * reply is taken from this transcript, not from a second copy of it.
  *
  * @param child - the published child, when it runs in this process.
  * @returns the watcher.

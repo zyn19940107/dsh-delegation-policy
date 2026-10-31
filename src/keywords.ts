@@ -18,7 +18,6 @@ import type { Agent } from '@deepseek-ai/dsh-agent'
 import type { WatchedTranscript } from './watch.js'
 import type { ContentBlock } from '@deepseek-ai/dsh-llm'
 import type { ObjectJsonSchema } from '@deepseek-ai/dsh-tools'
-import { registerChild, releaseChildBudget, type ChildBudget } from './guard.js'
 import { readStringList } from './project.js'
 
 /** Provider that runs the extractor. */
@@ -55,13 +54,6 @@ export const KEYWORD_OUTPUT_SCHEMA: ObjectJsonSchema = {
       type: 'string',
       description: 'One sentence: which part of the conclusion each term is for.',
     },
-    alreadySearched: {
-      type: 'array',
-      description: 'What the delegated child already looked up on its own, as short phrases. Empty when '
-        + 'it looked nothing up. The pipeline uses this to keep the next round from searching the same '
-        + 'thing twice.',
-      items: { type: 'string' },
-    },
   },
 }
 
@@ -75,8 +67,6 @@ export interface KeywordConfig {
   model?: string
   /** How many search terms the extractor may return. */
   maxKeywords: number
-  /** How many retrieval calls the extractor may make. */
-  maxChildCalls: number
 }
 
 /**
@@ -113,13 +103,9 @@ export function buildKeywordPrompt(
     + 'reasoning needs no lookup.',
     'Return fewer terms than the maximum when fewer are needed, and return none when the answer '
     + 'needs no external check at all.',
-    'Also report what the child already looked up on its own, if anything: it may have used a '
-    + 'retrieval tool while it reasoned. Name those lookups as short phrases in `alreadySearched`, '
-    + 'so the next round does not search the same thing again.',
     'Then deliver your result with the structured_output tool:',
     '- keywords: the search terms, most important first.',
     '- rationale: one sentence saying which part of the answer each term is for.',
-    '- alreadySearched: what the child already looked up, as short phrases.',
   ].join('\n')
 }
 
@@ -155,8 +141,6 @@ export interface KeywordProjection {
   keywords: string[]
   /** Why they were chosen. */
   rationale: string
-  /** What the delegated child had already looked up on its own. */
-  alreadySearched: string[]
 }
 
 /**
@@ -173,56 +157,18 @@ export function projectKeywords(value: unknown, maxKeywords: number): KeywordPro
     .filter((item) => item.length > 0)
     .slice(0, maxKeywords)
   const rationale = typeof record.rationale === 'string' ? record.rationale : ''
-  const alreadySearched = readStringList(value, 'alreadySearched')
-    .map((item) => item.trim())
-    .filter((item) => item.length > 0)
-  return { keywords, rationale, alreadySearched }
-}
-
-/**
- * Drop the terms that have already been looked up.
- *
- * The delegated child may have done its own retrieval while it reasoned, and
- * the pipeline does its own. Searching the same point twice costs a whole
- * round and buys nothing, so a term that the child already covered is not
- * searched again.
- *
- * The comparison is on the words, not on the strings: two phrasings of the
- * same lookup share most of their words, and the ones that do not are two
- * different lookups. A term that shares half its words with something
- * already searched is treated as the same lookup.
- *
- * @param keywords - the terms the extractor named.
- * @param alreadySearched - what has been looked up already.
- * @returns the terms that are still worth searching.
- */
-export function dropAlreadySearched(
-  keywords: readonly string[],
-  alreadySearched: readonly string[],
-): string[] {
-  if (alreadySearched.length === 0) return [...keywords]
-  const words = (text: string): Set<string> => new Set(
-    text.toLowerCase().split(/[^\p{L}\p{N}]+/u).filter((word) => word.length > 1),
-  )
-  const seen = alreadySearched.map((item) => words(item))
-  return keywords.filter((keyword) => {
-    const own = words(keyword)
-    if (own.size === 0) return true
-    for (const other of seen) {
-      let shared = 0
-      for (const word of own) if (other.has(word)) shared += 1
-      if (shared * 2 >= own.size) return false
-    }
-    return true
-  })
+  return { keywords, rationale }
 }
 
 /**
  * Run the extractor and return the search terms it found.
  *
+ * The extractor reads the delegated child's transcript and names what to look
+ * up. It is not a reader itself: the web guard refuses it every page-fetching
+ * tool, so it carries no reading budget.
+ *
  * @param ctx - the plugin context supplying the registries.
  * @param config - the resolved extractor configuration.
- * @param budget - the budget that covers this route's children.
  * @param parent - the agent the extraction runs on behalf of.
  * @param signal - the caller's signal.
  * @param transcript - what the delegated child wrote: its reasoning and its answer.
@@ -231,7 +177,6 @@ export function dropAlreadySearched(
 export async function runKeywordExtractor(
   ctx: Context,
   config: KeywordConfig,
-  budget: ChildBudget,
   parent: Agent,
   signal: AbortSignal,
   transcript: WatchedTranscript,
@@ -252,12 +197,10 @@ export async function runKeywordExtractor(
     outputSchema: KEYWORD_OUTPUT_SCHEMA,
     ...agentOptions === undefined ? {} : { agentOptions },
   })
-  registerChild(budget, run.id, config.maxChildCalls)
   try {
     const result = await run.result
     return projectKeywords(result.structured, config.maxKeywords)
   } finally {
-    releaseChildBudget(budget, run.id)
     await run.dispose()
   }
 }

@@ -35,13 +35,6 @@ export interface SearchProjection {
   truncated: boolean
 }
 
-/** The parent's view of one verification pass. */
-export interface VerdictProjection {
-  verdict: 'confirmed' | 'conflict'
-  problems: string[]
-  evidence: { url: string, title?: string, snippet?: string }[]
-}
-
 /**
  * Read the text blocks of a child's final assistant message.
  *
@@ -198,59 +191,6 @@ export function normalizeSources(
       ...typeof publishedAt === 'string' && publishedAt.length > 0 ? { publishedAt } : {},
     })
     if (sources.length >= maxSources) break
-  }
-  return sources
-}
-
-/**
- * Project a verification pass into the parent's view.
- *
- * A verifier that answered in prose did not deliver a verdict. That is not a
- * confirmation: the pass is reported as a conflict, and the prose becomes the
- * objection, because "no verdict" must not be read as "nothing to fix".
- *
- * @param result - the run's result.
- * @returns the parent's view of the verdict.
- */
-export function projectVerdict(result: DelegatedResult): VerdictProjection {
-  if (result.structured !== undefined) {
-    const structured = result.structured as { verdict?: unknown }
-    const problems = readStringList(result.structured, 'problems')
-    const verdict = structured.verdict === 'confirmed' && problems.length === 0
-      ? 'confirmed'
-      : 'conflict'
-    return { verdict, problems, evidence: normalizeEvidence(result.structured) }
-  }
-  const text = readFinalText(result.output)
-  if (text.length === 0) throw noResultError(result, 'verifying')
-  return { verdict: 'conflict', problems: [text], evidence: [] }
-}
-
-/**
- * Project a verifier's evidence into the parent's evidence list.
- *
- * @param value - the child's structured result.
- * @returns the accepted sources.
- */
-export function normalizeEvidence(
-  value: unknown,
-): { url: string, title?: string, snippet?: string }[] {
-  if (typeof value !== 'object' || value === null) return []
-  const raw = (value as { evidence?: unknown }).evidence
-  if (!Array.isArray(raw)) return []
-  const sources: { url: string, title?: string, snippet?: string }[] = []
-  for (const item of raw) {
-    if (typeof item !== 'object' || item === null) continue
-    const record = item as Record<string, unknown>
-    const url = record['url']
-    if (typeof url !== 'string' || url.length === 0) continue
-    const title = record['title']
-    const snippet = record['snippet']
-    sources.push({
-      url,
-      ...typeof title === 'string' && title.length > 0 ? { title } : {},
-      ...typeof snippet === 'string' && snippet.length > 0 ? { snippet } : {},
-    })
   }
   return sources
 }

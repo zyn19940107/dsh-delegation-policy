@@ -75,8 +75,8 @@ export function parseClassifyArgs(value: unknown): ClassifyQuestionArgs | undefi
 /**
  * What one conversation has been told about the turn in progress.
  *
- * The state is kept per session and dropped when a turn passes the check, so
- * the next turn starts without a classification and has to make one again.
+ * The state is kept per session and cleared when the next turn opens, so the
+ * next turn starts without a classification and has to make one again.
  */
 export class JudgementGate {
   private readonly turns = new Map<string, TurnJudgement>()
@@ -172,10 +172,9 @@ export function applyClassifyTool(ctx: Context, gate: JudgementGate): void {
   ctx.tools.register(defineTool({
     name: 'classify_question',
     description: 'State whether the question you are answering is a judgement — a recommendation, a comparison, '
-      + 'a trade-off, a design, a risk analysis, or a "what should we do" — and why. Call this before you answer '
-      + 'any question whose answer you are not sure how to settle. A judgement is answered by delegating it to '
-      + 'think_deep; anything else is answered here. Your conclusion is what decides the route, so state the '
-      + 'one you actually hold.',
+      + 'a trade-off, a design, a risk analysis, or a "what should we do" — and why. Every turn classifies its '
+      + 'question before it may end. A judgement is answered by delegating it to think_deep; anything else is '
+      + 'answered here. Your conclusion is what decides the route, so state the one you actually hold.',
     parameters: {
       question: {
         type: 'string',
