@@ -8,11 +8,10 @@
  * carried 216 KB of retrieved material — about 66K tokens — into its context.
  *
  * The budget is now charged by the session id the executing agent reports for
- * itself, and it covers every delegated child, not only the children this
- * plugin started.
+ * itself, and it covers every child this plugin started that reads.
  */
 
-import { checkChildBudget, createChildBudget, registerChild, releaseChildBudget } from '../src/guard.js'
+import { checkChildBudget, createChildBudget, DEFAULT_WEB_TOOLS, registerChild, releaseChildBudget } from '../src/guard.js'
 
 let failures = 0
 
@@ -47,58 +46,77 @@ function execution(sessionId: string, origin: string, name: string): any {
   }
 }
 
+/** The tools that reach the network, as the plugin reads them. */
+const webTools = (): readonly string[] => DEFAULT_WEB_TOOLS
+
 console.log('checkChildBudget')
 {
   // A child this plugin started carries the limit of its route.
-  const budget = createChildBudget(5)
+  const budget = createChildBudget()
   registerChild(budget, 'child-1', 3)
-  check('allows the first call', checkChildBudget(budget, execution('child-1', 'subagent', 'web_search')) === undefined)
-  check('allows the second call', checkChildBudget(budget, execution('child-1', 'subagent', 'web_fetch')) === undefined)
-  check('allows the third call', checkChildBudget(budget, execution('child-1', 'subagent', 'web_search')) === undefined)
-  const denial = checkChildBudget(budget, execution('child-1', 'subagent', 'web_fetch'))
+  check('allows the first call', checkChildBudget(budget, execution('child-1', 'subagent', 'web_search'), webTools) === undefined)
+  check('allows the second call', checkChildBudget(budget, execution('child-1', 'subagent', 'web_fetch'), webTools) === undefined)
+  check('allows the third call', checkChildBudget(budget, execution('child-1', 'subagent', 'web_search'), webTools) === undefined)
+  const denial = checkChildBudget(budget, execution('child-1', 'subagent', 'web_fetch'), webTools)
   check('denies the fourth call', denial !== undefined, denial)
   check('the denial names the limit', denial !== undefined && denial.includes('3 retrieval calls'))
 }
 {
-  // A delegated child this plugin did not start is still charged, with the
-  // default limit. A policy that binds only its own routes is not a policy.
-  const budget = createChildBudget(2)
-  check('allows the first call', checkChildBudget(budget, execution('other', 'subagent', 'web_search')) === undefined)
-  check('allows the second call', checkChildBudget(budget, execution('other', 'subagent', 'web_search')) === undefined)
-  const denial = checkChildBudget(budget, execution('other', 'subagent', 'web_search'))
-  check('denies the third call', denial !== undefined, denial)
-  check('the denial names the default limit', denial !== undefined && denial.includes('2 retrieval calls'))
+  // A child some other route started is not charged: it may not read at all,
+  // because the web guard refuses every tool that reaches the network to a
+  // child that only reasons. There is no allowance to spend.
+  const budget = createChildBudget()
+  check('does not charge an unregistered child', checkChildBudget(budget, execution('other', 'subagent', 'web_search'), webTools) === undefined)
+  check('does not charge it twice either', checkChildBudget(budget, execution('other', 'subagent', 'web_search'), webTools) === undefined)
 }
 {
   // The parent conversation is not a delegated child: it is not charged, and
   // the delegation routes are not what it uses to reach the web.
-  const budget = createChildBudget(2)
-  check('does not charge the parent', checkChildBudget(budget, execution('parent', 'user', 'web_search')) === undefined)
-  check('does not charge the parent twice', checkChildBudget(budget, execution('parent', 'user', 'web_search')) === undefined)
+  const budget = createChildBudget()
+  check('does not charge the parent', checkChildBudget(budget, execution('parent', 'user', 'web_search'), webTools) === undefined)
+  check('does not charge the parent twice', checkChildBudget(budget, execution('parent', 'user', 'web_search'), webTools) === undefined)
 }
 {
-  // A tool that is not a reading call is not charged. `read_page` pulls a page
-  // into the child's context, so it is a reading call like the other two.
-  const budget = createChildBudget(1)
+  // A tool that is not a reading call is not charged. `read_page` and
+  // `x_search` pull a page into the child's context, so they are reading
+  // calls like the other two.
+  const budget = createChildBudget()
   registerChild(budget, 'child-2', 1)
-  check('does not charge a non-retrieval call', checkChildBudget(budget, execution('child-2', 'subagent', 'read')) === undefined)
-  check('charges read_page as a reading call', checkChildBudget(budget, execution('child-2', 'subagent', 'read_page')) === undefined)
-  check('denies the second reading call', checkChildBudget(budget, execution('child-2', 'subagent', 'web_fetch')) !== undefined)
+  check('does not charge a non-retrieval call', checkChildBudget(budget, execution('child-2', 'subagent', 'read'), webTools) === undefined)
+  check('charges read_page as a reading call', checkChildBudget(budget, execution('child-2', 'subagent', 'read_page'), webTools) === undefined)
+  check('denies the second reading call', checkChildBudget(budget, execution('child-2', 'subagent', 'web_fetch'), webTools) !== undefined)
+}
+{
+  // x_search reaches the network, so it is charged like any other reading call.
+  const budget = createChildBudget()
+  registerChild(budget, 'child-x', 1)
+  check('charges x_search as a reading call', checkChildBudget(budget, execution('child-x', 'subagent', 'x_search'), webTools) === undefined)
+  check('denies the call after it', checkChildBudget(budget, execution('child-x', 'subagent', 'x_search'), webTools) !== undefined)
+}
+{
+  // A deployment that names another network tool in its configuration gets it
+  // charged too.
+  const budget = createChildBudget()
+  registerChild(budget, 'child-c', 1)
+  const configured = (): readonly string[] => ['web_search', 'browse']
+  check('charges a configured web tool', checkChildBudget(budget, execution('child-c', 'subagent', 'browse'), configured) === undefined)
+  check('does not charge a tool outside the configuration', checkChildBudget(budget, execution('child-c', 'subagent', 'x_search'), configured) === undefined)
 }
 {
   // A released child stops being charged.
-  const budget = createChildBudget(5)
+  const budget = createChildBudget()
   registerChild(budget, 'child-3', 1)
-  checkChildBudget(budget, execution('child-3', 'subagent', 'web_search'))
+  checkChildBudget(budget, execution('child-3', 'subagent', 'web_search'), webTools)
   releaseChildBudget(budget, 'child-3')
-  check('forgets a released child', checkChildBudget(budget, execution('child-3', 'subagent', 'web_search')) === undefined)
+  check('forgets a released child', checkChildBudget(budget, execution('child-3', 'subagent', 'web_search'), webTools) === undefined)
 }
 {
   // Two children are accounted separately.
-  const budget = createChildBudget(1)
-  checkChildBudget(budget, execution('a', 'subagent', 'web_search'))
-  check('the other child has its own allowance', checkChildBudget(budget, execution('b', 'subagent', 'web_search')) === undefined)
+  const budget = createChildBudget()
+  registerChild(budget, 'a', 1)
+  checkChildBudget(budget, execution('a', 'subagent', 'web_search'), webTools)
+  check('the other child has its own allowance', checkChildBudget(budget, execution('b', 'subagent', 'web_search'), webTools) === undefined)
 }
 
-console.log(failures === 0 ? '\nall checks passed' : `\n${failures} check(s) failed`)
+console.log(failures === 0 ? '\\nall checks passed' : `\\n${failures} check(s) failed`)
 process.exit(failures === 0 ? 0 : 1)

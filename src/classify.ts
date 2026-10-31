@@ -15,7 +15,8 @@
 
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import type { Context } from '@deepseek-ai/cordis'
-import { defineTool, type ToolExecution } from '@deepseek-ai/dsh-tools'
+import { createUserMessage } from '@deepseek-ai/dsh-llm'
+import { defineTool, type ToolExecution, type ToolGuard } from '@deepseek-ai/dsh-tools'
 
 /** Field the main agent's classification is written to. */
 export const CLASSIFY_FIELD = 'judgement'
@@ -146,17 +147,160 @@ export class JudgementGate {
  * What the turn is missing, as the agent is told.
  *
  * The wording follows the web guard: it names the tool, says why, and gives
- * the alternative action.
+ * the alternative action. It also says what to do when the tool is not in the
+ * agent's tool list: a turn that cannot classify must still be able to end.
  */
 export const NEEDS_CLASSIFICATION = 'This turn has not classified the question yet. Call classify_question '
   + 'first, with your own conclusion about whether the question asks for a judgement — a recommendation, '
   + 'a comparison, a trade-off, a design, a risk analysis, or a "what should we do". Then answer from that '
-  + 'classification: a judgement is delegated with think_deep, anything else is answered here.'
+  + 'classification: a judgement is delegated with think_deep, anything else is answered here. If '
+  + 'classify_question is not in your tool list, say so in your reply and answer the question anyway.'
 
 /** What a judged turn is told when it ends without a delegated thought. */
 export const NEEDS_DELEGATION = 'This question was classified as a judgement, so the answer is not yours to '
-  + 'write from what you already have. Call think_deep with the question, wait for its verified conclusion, '
-  + 'and write the answer from that result.'
+  + 'write from what you already have. Call think_deep with the question, wait for its conclusion, and write '
+  + 'the answer from that result.'
+
+/**
+ * What a turn that delegates before it classifies is told.
+ *
+ * Two rules meet here: the gate wants the turn classified before it may end,
+ * and the thought-only guard closes every other tool once a thought is on its
+ * way. A model that delegates first therefore cannot classify afterwards, and
+ * the turn ends with neither a classification nor a routed answer. So the
+ * order is enforced instead of described: classify, then delegate.
+ */
+export const NEEDS_CLASSIFICATION_FIRST = 'Classify the question before you delegate it: call '
+  + 'classify_question with your own conclusion about whether this is a judgement. A delegated thought '
+  + 'carries the whole turn, and the tools that would let you classify afterwards are closed once it starts.'
+
+/**
+ * Refuse a delegated thought that starts before the question is classified.
+ *
+ * @param gate - the state the classification is recorded in.
+ * @returns the guard.
+ */
+export function createClassifyFirstGuard(gate: JudgementGate): ToolGuard {
+  return (execution) => {
+    if (execution.name !== 'think_deep') return undefined
+    const agent: Agent | undefined = execution.agent
+    if (agent === undefined) return undefined
+    if (agent.session.header.origin === 'subagent') return undefined
+    if (gate.state(agent.session.id).classified) return undefined
+    return NEEDS_CLASSIFICATION_FIRST
+  }
+}
+
+/**
+ * The judgement gate's configuration, read when the gate runs.
+ */
+export interface JudgementGateConfig {
+  /** Whether a turn must classify its question before it may end. */
+  judgementEnabled: () => boolean
+  /** How many times one turn may be pulled back before it is let through. */
+  judgementMaxPullbacks: () => number
+}
+
+/**
+ * Write one line to the host's standard error.
+ *
+ * The harness's own logger is not captured by every host, so what the gate
+ * does is written where a host's stderr is always seen.
+ *
+ * @param line - the line to write.
+ */
+function log(line: string): void {
+  process.stderr.write(`${line}\n`)
+}
+
+/**
+ * Wire the judgement gate.
+ *
+ * The agent states its own classification; the plugin makes the statement
+ * unavoidable by checking, at the point where the agent's answer is finished,
+ * that the answer classified its question and — when the question is a
+ * judgement — that a delegated thought answered it.
+ *
+ * The check runs on the assistant stream's closing frame rather than on the
+ * turn's end. A turn ends either because a tool result concluded it or
+ * because the agent simply answered, and only the second case is the one
+ * worth pulling back. A step that called a tool is mid-work, not finished,
+ * so the frame is ignored when the step used one.
+ *
+ * @param ctx - the plugin context supplying the registries.
+ * @param gate - the state the classification is recorded in.
+ * @param config - the gate's configuration.
+ */
+export function applyJudgementGate(
+  ctx: Context,
+  gate: JudgementGate,
+  config: JudgementGateConfig,
+): void {
+  const tooledThisStep = new WeakMap<object, boolean>()
+  // A step that called a tool is mid-work, not finished: its closing frame is
+  // not the turn's last word, so the gate does not judge it.
+  ctx.on('tools/pre-execute', async (exec, next) => {
+    if (exec.agent !== undefined) tooledThisStep.set(exec.agent, true)
+    return next()
+  })
+  ctx.on('agent/assistant-stream', (payload) => {
+    if (!config.judgementEnabled()) return
+    const frame = payload.frame
+    const agent = payload.agent
+    if (frame.type !== 'end') return
+    if (agent.session.header.origin === 'subagent') return
+    if (tooledThisStep.get(agent) === true) {
+      tooledThisStep.delete(agent)
+      return
+    }
+    const sessionId = agent.session.id
+    const state = gate.state(sessionId)
+    const missing = state.classified
+      ? (state.verdict && !state.delegated ? NEEDS_DELEGATION : undefined)
+      : NEEDS_CLASSIFICATION
+    if (missing === undefined) {
+      log(`delegation-policy: the answer of session ${sessionId} passed the judgement gate `
+        + `(classified=${state.classified}, judgement=${state.verdict}, delegated=${state.delegated})`)
+      // The state is not cleared here. A turn has one closing frame per step,
+      // and a step that used a tool is not the turn's last word — clearing on
+      // the first frame would make the second frame find nothing classified
+      // and pull the agent back for no reason. The state is cleared when the
+      // next turn opens.
+      return
+    }
+    // A turn that cannot classify must still be able to end. The tool is
+    // registered by this plugin, so a pullback is only worth sending when the
+    // agent can act on it.
+    if (ctx.tools.get('classify_question') === undefined) {
+      log(`delegation-policy: session ${sessionId} ends without a classification, but `
+        + 'classify_question is not registered — the gate cannot ask for one')
+      return
+    }
+    const pullbacks = gate.pullback(sessionId)
+    log(`delegation-policy: the answer of session ${sessionId} was pulled back (${pullbacks}): `
+      + (missing === NEEDS_CLASSIFICATION ? 'no classification' : 'no delegated thought'))
+    if (pullbacks > config.judgementMaxPullbacks()) {
+      // A turn that keeps refusing to classify is let through: the gate is a
+      // rule, not a trap, and a model that cannot state its conclusion must
+      // still be able to answer.
+      gate.clear(sessionId)
+      return
+    }
+    agent.steer(createUserMessage({
+      content: [{ type: 'text', text: missing }],
+      source: { kind: 'system-prompt' },
+    }))
+  })
+
+  // A turn starts over: what the previous turn classified says nothing about
+  // this one, and the question may be a different kind.
+  ctx.on('agent/pre-step', async (payload, next) => {
+    if (payload.step === 1) {
+      gate.clear(payload.agent.session.id)
+    }
+    return next()
+  })
+}
 
 /**
  * Register the classification tool.

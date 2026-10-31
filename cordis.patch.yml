@@ -18,8 +18,8 @@
         maxChildCalls: 3
         searchTimeoutMs: 600000
         thinkProvider: fork
-        maxThinkCalls: 5
         thinkTimeoutMs: 900000
+        webTools: [web_search, web_fetch, read_page, x_search]
         keywordAgentProvider: spawn
         keywordMaxCount: 3
         keywordSearchCalls: 3

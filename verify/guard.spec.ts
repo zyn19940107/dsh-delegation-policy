@@ -13,8 +13,8 @@ import {
   createNoRedelegationGuard,
   createThoughtOnlyGuard,
   createWebGuard,
+  DEFAULT_WEB_TOOLS,
   markReader,
-  PARENT_DENIED_WEB_TOOLS,
   ThoughtRoute,
 } from '../src/guard.js'
 
@@ -50,7 +50,7 @@ function execution(sessionId: string, origin: string, name: string): any {
 
 console.log('createWebGuard')
 {
-  const guard = createWebGuard(createChildBudget(3))
+  const guard = createWebGuard(createChildBudget(), () => DEFAULT_WEB_TOOLS)
   check('refuses web_search in the parent', guard(execution('p', 'user', 'web_search')) !== undefined)
   check('refuses web_fetch in the parent', guard(execution('p', 'user', 'web_fetch')) !== undefined)
   check('refuses read_page in the parent', guard(execution('p', 'user', 'read_page')) !== undefined)
@@ -62,7 +62,7 @@ console.log('createWebGuard')
   // reason may not — its knowledge is gathered for it.
   const budget = createChildBudget(3)
   markReader(budget, 'searcher')
-  const guard = createWebGuard(budget)
+  const guard = createWebGuard(budget, () => DEFAULT_WEB_TOOLS)
   check('allows a reader child to search', guard(execution('searcher', 'subagent', 'web_search')) === undefined)
   check('allows a reader child to fetch', guard(execution('searcher', 'subagent', 'web_fetch')) === undefined)
   check('allows a reader child to read a page', guard(execution('searcher', 'subagent', 'read_page')) === undefined)
@@ -71,15 +71,22 @@ console.log('createWebGuard')
   check('refuses the page read of a child that reasons', guard(execution('thinker', 'subagent', 'read_page')) !== undefined)
 }
 {
-  const guard = createWebGuard(createChildBudget(3))
+  const guard = createWebGuard(createChildBudget(), () => DEFAULT_WEB_TOOLS)
   const denial = guard(execution('p', 'user', 'web_fetch'))
   check('points the caller at search_web', denial !== undefined && denial.includes('search_web'))
   check('names the tool it refused', denial !== undefined && denial.includes('web_fetch'))
 }
 {
-  check('the denied set covers the search', PARENT_DENIED_WEB_TOOLS.includes('web_search'))
-  check('the denied set covers the fetch', PARENT_DENIED_WEB_TOOLS.includes('web_fetch'))
-  check('the denied set covers the page reader', PARENT_DENIED_WEB_TOOLS.includes('read_page'))
+  check('the denied set covers the search', DEFAULT_WEB_TOOLS.includes('web_search'))
+  check('the denied set covers the fetch', DEFAULT_WEB_TOOLS.includes('web_fetch'))
+  check('the denied set covers the page reader', DEFAULT_WEB_TOOLS.includes('read_page'))
+  check('the denied set covers the X search', DEFAULT_WEB_TOOLS.includes('x_search'))
+}
+{
+  // A tool another plugin brings is covered when the deployment names it.
+  const guard = createWebGuard(createChildBudget(), () => ['web_search', 'browse'])
+  check('refuses a configured web tool in the parent', guard(execution('p', 'user', 'browse')) !== undefined)
+  check('leaves a tool outside the configuration alone', guard(execution('p', 'user', 'x_search')) === undefined)
 }
 
 console.log('createNoRedelegationGuard')

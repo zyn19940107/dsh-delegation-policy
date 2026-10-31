@@ -1,6 +1,6 @@
 {
   "name": "@zyn19940107/dsh-delegation-policy",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "DeepSeek Harness 的委派策略插件：把「该搜就搜、该想就想」从提示词里的建议，变成运行时拦得住的规则。search_web 委派干净上下文的子代理去查，think_deep 委派继承本对话的子代理去推理，主 agent 直接联网会被拒绝，判断题不委派就不许作答。",
   "license": "MIT",
   "type": "module",

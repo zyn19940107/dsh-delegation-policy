@@ -8,7 +8,7 @@
  * reads and the state machine is what decides whether it reads them.
  */
 
-import { JudgementGate, parseClassifyArgs } from '../src/classify.js'
+import { createClassifyFirstGuard, JudgementGate, parseClassifyArgs } from '../src/classify.js'
 
 let failures = 0
 
@@ -26,6 +26,18 @@ function check(name: string, condition: boolean, detail = ''): void {
   }
   failures += 1
   console.log(`  FAIL ${name}${detail === '' ? '' : ` — ${detail}`}`)
+}
+
+/**
+ * Build a tool execution for a fake agent.
+ *
+ * @param sessionId - the agent's session id.
+ * @param origin - the session header's origin.
+ * @param name - the tool being called.
+ * @returns an execution shaped like the runtime's.
+ */
+function execution(sessionId: string, origin: string, name: string): any {
+  return { name, agent: { session: { id: sessionId, header: { origin } } } }
 }
 
 const gate = new JudgementGate()
@@ -77,6 +89,24 @@ check('a call without a question does not parse', parseClassifyArgs({ judgement:
 check('a call without a verdict does not parse', parseClassifyArgs({ question: 'q' }) === undefined)
 check('a call with a blank question does not parse', parseClassifyArgs({ question: '  ', judgement: true }) === undefined)
 check('a missing reason is tolerated', parseClassifyArgs({ question: 'q', judgement: false })?.reason === '')
+
+console.log('createClassifyFirstGuard')
+{
+  // A turn is classified before it is delegated: once a thought is on its way
+  // the other tools are closed, so a delegation that skipped the classification
+  // would leave the turn with neither.
+  const state = new JudgementGate()
+  const guard = createClassifyFirstGuard(state)
+  check('refuses a thought before the turn is classified',
+    guard(execution('d1', 'user', 'think_deep')) !== undefined)
+  check('leaves the other tools alone', guard(execution('d1', 'user', 'search_web')) === undefined)
+  state.markClassified('d1', true, 'it asks what we should do')
+  check('allows a thought after the classification', guard(execution('d1', 'user', 'think_deep')) === undefined)
+  check('leaves a child alone', guard(execution('d2', 'subagent', 'think_deep')) === undefined)
+  const denial = guard(execution('d3', 'user', 'think_deep'))
+  check('names the tool to call', denial !== undefined && denial.includes('classify_question'))
+  check('says why the order matters', denial !== undefined && denial.includes('before you delegate'))
+}
 
 if (failures > 0) {
   console.error(`\n${failures} check(s) failed`)

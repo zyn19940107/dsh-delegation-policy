@@ -416,16 +416,17 @@ export function applyThinkTool(
   ctx.tools.register(defineTool({
     name: 'think_deep',
     description: 'Delegate a hard question to a subagent that inherits this conversation and reasons over '
-      + 'it at length. The delegated child reasons first; a second subagent reads that reasoning and '
-      + 'names the parts that would have to be checked against an outside source; a third subagent looks '
-      + 'up exactly those; and the same thinking child then reconsiders with the retrieved material '
-      + 'beside its own first conclusion. Use it whenever the question asks for a judgement — a '
-      + 'recommendation, a comparison, a trade-off, a design, a risk analysis — and not only for a fact; '
-      + 'the user need not ask for it. A task that mixes a judgement with mechanical work is two tasks: '
-      + 'delegate the judgement first, with the judgement in the focus, and do the work afterwards — a '
-      + 'continuous edit is not a reason to reason inside it. It returns a structured conclusion — '
-      + 'recommendation, key points, assumptions, and risks — while the reasoning and the retrieved '
-      + 'material stay in the child.',
+      + 'it at length. Classify the question with classify_question first: a delegated thought carries '
+      + 'the whole turn and closes the other tools. The delegated child reasons first; a second subagent '
+      + 'reads that reasoning and names the parts that would have to be checked against an outside '
+      + 'source; a third subagent looks up exactly those; and the same thinking child then reconsiders '
+      + 'with the retrieved material beside its own first conclusion. Use it whenever the question asks '
+      + 'for a judgement — a recommendation, a comparison, a trade-off, a design, a risk analysis — and '
+      + 'not only for a fact; the user need not ask for it. A task that mixes a judgement with mechanical '
+      + 'work is two tasks: delegate the judgement first, with the judgement in the focus, and do the '
+      + 'work afterwards — a continuous edit is not a reason to reason inside it. It returns a structured '
+      + 'conclusion — recommendation, key points, assumptions, and risks — while the reasoning and the '
+      + 'retrieved material stay in the child.',
     parameters: {
       task: {
         type: 'string',
@@ -512,6 +513,15 @@ export function applyThinkTool(
         try {
           await waitForChildTurn(agent, exec.signal)
           const transcript = watcher.transcript()
+          if (transcript.content.trim() === '') {
+            // The answer is read from the stream the child writes. A child that
+            // runs out of process has no stream to read, and an empty answer
+            // would be handed on as if the thought had concluded nothing.
+            throw new Error('the delegated thought produced no answer this pipeline could read: its '
+              + 'stream was not observable. The thinking child has to run in this process — a fork '
+              + 'with an in-process provider — because the pipeline reads the answer from the stream '
+              + 'the child writes.')
+          }
           return { projected: parseThinkAnswer(transcript.content), transcript }
         } finally {
           watcher.stop()

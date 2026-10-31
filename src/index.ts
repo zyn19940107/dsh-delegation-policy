@@ -23,13 +23,12 @@
 
 import type { Context, Volatile } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
-import { createUserMessage } from '@deepseek-ai/dsh-llm'
 import type { PreToolDecision, ToolExecution } from '@deepseek-ai/dsh-tools'
 import {
   applyClassifyTool,
+  applyJudgementGate,
+  createClassifyFirstGuard,
   JudgementGate,
-  NEEDS_CLASSIFICATION,
-  NEEDS_DELEGATION,
 } from './classify.js'
 import {
   checkChildBudget,
@@ -37,6 +36,7 @@ import {
   createNoRedelegationGuard,
   createThoughtOnlyGuard,
   createWebGuard,
+  DEFAULT_WEB_TOOLS,
   ThoughtRoute,
 } from './guard.js'
 import { DEFAULT_WATCH_MAX_CHARS } from './watch.js'
@@ -55,7 +55,6 @@ import {
 } from './search.js'
 import {
   applyThinkTool,
-  DEFAULT_MAX_THINK_CALLS,
   DEFAULT_THINK_PROVIDER,
   DEFAULT_THINK_TIMEOUT_MS,
 } from './think.js'
@@ -93,18 +92,20 @@ export const DELEGATION_GUIDANCE = [
   + 'it at length. Use it whenever the question asks for a judgement — a recommendation, a comparison, '
   + 'a trade-off, a design, a risk analysis — and not only for a fact. Judging from your own reading is '
   + 'where a small model is weakest, so the judgement goes to a subagent that already holds everything '
-  + 'this conversation established. It works in this order: the delegated child reasons first; a second '
-  + 'subagent reads that reasoning and names the parts that would have to be checked against an outside '
-  + 'source; a third subagent looks up exactly those; and the same thinking child then reconsiders with '
-  + 'the retrieved material beside its own first conclusion. It returns a structured conclusion — '
-  + 'recommendation, key points, assumptions, risks — while the reasoning and the retrieved material stay '
-  + 'inside the pipeline.',
+  + 'this conversation established. Classify the question with classify_question first; a delegated '
+  + 'thought carries the whole turn and closes the other tools. It works in this order: the delegated '
+  + 'child reasons first; a second subagent reads that reasoning and names the parts that would have to '
+  + 'be checked against an outside source; a third subagent looks up exactly those; and the same thinking '
+  + 'child then reconsiders with the retrieved material beside its own first conclusion. It returns a '
+  + 'structured conclusion — recommendation, key points, assumptions, risks — while the reasoning and the '
+  + 'retrieved material stay inside the pipeline.',
   '- subagent: a fresh subagent for a self-contained task that needs neither of the above.',
   '- classify_question: state whether the question you are answering is a judgement — a recommendation, a '
   + 'comparison, a trade-off, a design, a risk analysis, or a "what should we do" — and why. Every turn '
   + 'classifies its question before it may end: a judgement is answered by delegating it to think_deep, '
   + 'and anything else is answered here. Your own conclusion decides the route, so state the one you '
-  + 'actually hold.',
+  + 'actually hold. Classify before you delegate: a delegated thought carries the whole turn and closes '
+  + 'the other tools, so the classification has to come first.',
   'These are the rules for delegation. Do not go looking for them elsewhere — not in a policy document, '
   + 'not in a README, not in this plugin\'s source: the tools are already in your tool table and the '
   + 'rules are already here.',
@@ -158,10 +159,10 @@ export interface Config {
   searchTimeoutMs: Volatile<number>
   /** Provider that runs the thinking child. */
   thinkProvider: Volatile<string>
-  /** Retrieval calls a delegated child this plugin did not start may make. */
-  maxThinkCalls: Volatile<number>
   /** Budget for one delegated thought, in milliseconds. */
   thinkTimeoutMs: Volatile<number>
+  /** The tools that reach the network: refused to the parent, charged to the children that read. */
+  webTools: Volatile<string[]>
   /** The extractor that names what a conclusion would have to be checked against. */
   keywordAgentProvider: Volatile<string>
   /** The model provider the extractor runs on; the parent's when unset. */
@@ -187,8 +188,8 @@ export const Config = z.object({
   maxChildCalls: z.number().step(1).min(1).default(DEFAULT_MAX_CHILD_CALLS).volatile(),
   searchTimeoutMs: z.number().step(1).min(1).default(DEFAULT_SEARCH_TIMEOUT_MS).volatile(),
   thinkProvider: z.string().default(DEFAULT_THINK_PROVIDER).volatile(),
-  maxThinkCalls: z.number().step(1).min(1).default(DEFAULT_MAX_THINK_CALLS).volatile(),
   thinkTimeoutMs: z.number().step(1).min(1).default(DEFAULT_THINK_TIMEOUT_MS).volatile(),
+  webTools: z.array(z.string()).default([...DEFAULT_WEB_TOOLS]).volatile(),
   keywordAgentProvider: z.string().default(DEFAULT_KEYWORD_AGENT_PROVIDER).volatile(),
   keywordModelProvider: z.string().volatile(),
   keywordModel: z.string().volatile(),
@@ -200,18 +201,6 @@ export const Config = z.object({
 })
 
 /**
- * Write one line to the host's standard error.
- *
- * The harness's own logger is not captured by every host, so what the gate
- * does is written where a host's stderr is always seen.
- *
- * @param line - the line to write.
- */
-function log(line: string): void {
-  process.stderr.write(`${line}\n`)
-}
-
-/**
  * Register the delegation routes, the prompt guidance, and the rules enforced
  * at the execution point.
  *
@@ -219,11 +208,13 @@ function log(line: string): void {
  * @param config - the resolved plugin configuration.
  */
 export function apply(ctx: Context, config: Config): void {
-  // One budget for every delegated child. A child this plugin started carries
-  // the limit of its route; a child some other tool started still carries the
-  // default, so a delegation policy is not bypassed by taking another route to
-  // the same place.
-  const budget = createChildBudget(Math.max(config.maxChildCalls.get(), config.maxThinkCalls.get()))
+  // One budget for the children this plugin starts and lets read. A child
+  // some other route started may not read at all: the web guard refuses every
+  // tool that reaches the network to a child that only reasons.
+  const budget = createChildBudget()
+  // The tools that reach the network are read at call time: the deployment may
+  // install another one, and the list is configuration rather than code.
+  const webTools = (): readonly string[] => config.webTools.get()
 
   ctx.systemPrompt.section({
     name: 'tool:delegation-routes',
@@ -234,7 +225,7 @@ export function apply(ctx: Context, config: Config): void {
       : DELEGATION_GUIDANCE,
   })
 
-  ctx.tools.guard(createWebGuard(budget))
+  ctx.tools.guard(createWebGuard(budget, webTools))
 
   // Two different rules, and confusing them is what let a thought start
   // another thought.
@@ -262,62 +253,21 @@ export function apply(ctx: Context, config: Config): void {
   // makes the statement unavoidable by checking, at the point where the agent's
   // answer is finished, that the answer classified its question and — when the
   // question is a judgement — that a delegated thought answered it.
-  //
-  // The check runs on the assistant stream's closing frame rather than on the
-  // turn's end. A turn ends either because a tool result concluded it or
-  // because the agent simply answered, and only the second case is the one
-  // worth pulling back. A step that called a tool is mid-work, not finished,
-  // so the frame is ignored when the step used one.
   const gate = new JudgementGate()
-  const tooledThisStep = new WeakMap<object, boolean>()
   applyClassifyTool(ctx, gate)
-  ctx.on('agent/assistant-stream', (payload) => {
-    if (!config.judgementEnabled.get()) return
-    const frame = payload.frame
-    const agent = payload.agent
-    if (frame.type !== 'end') return
-    if (agent.session.header.origin === 'subagent') return
-    if (tooledThisStep.get(agent) === true) {
-      tooledThisStep.delete(agent)
-      return
-    }
-    const sessionId = agent.session.id
-    const state = gate.state(sessionId)
-    const missing = state.classified
-      ? (state.verdict && !state.delegated ? NEEDS_DELEGATION : undefined)
-      : NEEDS_CLASSIFICATION
-    if (missing === undefined) {
-      log(`delegation-policy: the answer of session ${sessionId} passed the judgement gate `
-        + `(classified=${state.classified}, judgement=${state.verdict}, delegated=${state.delegated})`)
-      // The state is not cleared here. A turn has one closing frame per step,
-      // and a step that used a tool is not the turn's last word — clearing on
-      // the first frame would make the second frame find nothing classified
-      // and pull the agent back for no reason. The state is cleared when the
-      // next turn opens.
-      return
-    }
-    const pullbacks = gate.pullback(sessionId)
-    log(`delegation-policy: the answer of session ${sessionId} was pulled back (${pullbacks}): `
-      + (missing === NEEDS_CLASSIFICATION ? 'no classification' : 'no delegated thought'))
-    if (pullbacks > config.judgementMaxPullbacks.get()) {
-      // A turn that keeps refusing to classify is let through: the gate is a
-      // rule, not a trap, and a model that cannot state its conclusion must
-      // still be able to answer.
-      gate.clear(sessionId)
-      return
-    }
-    agent.steer(createUserMessage({
-      content: [{ type: 'text', text: missing }],
-      source: { kind: 'system-prompt' },
-    }))
+  applyJudgementGate(ctx, gate, {
+    judgementEnabled: () => config.judgementEnabled.get(),
+    judgementMaxPullbacks: () => config.judgementMaxPullbacks.get(),
   })
+  // A turn is classified before it is delegated: once a thought is on its way,
+  // the tool that would classify afterwards is closed.
+  ctx.tools.guard(createClassifyFirstGuard(gate))
 
   ctx.on('tools/pre-execute', async (
     exec: ToolExecution,
     next,
   ): Promise<PreToolDecision> => {
     if (exec.agent !== undefined) {
-      tooledThisStep.set(exec.agent, true)
       // The thought is dispatched before the calls that would duplicate it, so
       // the routing is recorded here rather than when the thought returns: a
       // search issued in the same step as the thought must not slip through.
@@ -325,7 +275,7 @@ export function apply(ctx: Context, config: Config): void {
         thoughtRoute.begin(exec.agent.session.id)
       }
     }
-    const denial = checkChildBudget(budget, exec)
+    const denial = checkChildBudget(budget, exec, webTools)
     if (denial !== undefined) return { kind: 'deny', reason: denial }
     return next()
   })

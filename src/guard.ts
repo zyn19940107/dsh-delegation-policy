@@ -12,30 +12,29 @@ import type { Agent } from '@deepseek-ai/dsh-agent'
 import type { ToolExecution, ToolGuard } from '@deepseek-ai/dsh-tools'
 
 /**
- * Tools whose calls count against a child's reading budget.
+ * The tools that reach the network.
  *
- * `read_page` is here as well: it pulls a page into the child's context, so
- * it is a reading call like the other two. Leaving it out would have given a
- * reader child a way around the budget.
- */
-export const RETRIEVAL_TOOLS: readonly string[] = ['web_search', 'web_fetch', 'read_page']
-
-/**
- * Web tools the parent conversation may not call.
+ * The policy is a list of names, so the list has to name every tool in the
+ * deployment that can reach the network — including the ones other plugins
+ * bring. `x_search` is here because modsearch ships it: without it the parent
+ * conversation could search X and pull the answer in, which is exactly what
+ * the delegation exists to prevent.
  *
- * The parent has one way to the web: `search_web`, which delegates. A tool
- * that can pull a page into the parent is a way around that delegation.
+ * A deployment that installs another network tool adds its name to the
+ * `webTools` configuration; nothing here has to change for it to be covered.
  */
-export const PARENT_DENIED_WEB_TOOLS: readonly string[] = ['web_search', 'web_fetch', 'read_page']
+export const DEFAULT_WEB_TOOLS: readonly string[] = [
+  'web_search', 'web_fetch', 'read_page', 'x_search',
+]
 
 /**
  * Per-child retrieval accounting.
  *
  * A child is charged by the session id it reports for itself, so the accounting
  * never depends on the spawning side's idea of that id. A child this plugin
- * started carries the limit of its route; any other delegated child carries the
- * default limit, because a delegation policy that binds only its own routes is
- * not a policy.
+ * started carries the limit of its route. A child some other route started is
+ * not charged: it may not read at all, because the web guard refuses every
+ * tool that reaches the network to a child that only reasons.
  */
 export interface ChildBudget {
   /** Children whose job is to read pages: the search children. */
@@ -44,28 +43,24 @@ export interface ChildBudget {
   readonly calls: Map<string, number>
   /** The limit that applies to a child, by its session id. */
   readonly limits: Map<string, number>
-  /** The limit for a delegated child this budget did not start. */
-  defaultLimit: number
 }
 
 /**
  * Create an empty budget.
  *
- * @param defaultLimit - retrieval calls a delegated child this budget did not
- *   start may make.
  * @returns the budget.
  */
-export function createChildBudget(defaultLimit: number): ChildBudget {
-  return { calls: new Map(), limits: new Map(), defaultLimit, readers: new Set() }
+export function createChildBudget(): ChildBudget {
+  return { calls: new Map(), limits: new Map(), readers: new Set() }
 }
 
 /**
  * Record a child whose job is to read pages.
  *
- * The web guard refuses `web_search`, `web_fetch` and `read_page` to every
- * delegated child except these. A thinking child reasons over the conversation
- * it inherited; it does not fetch pages, and a fetch there is the reasoning
- * child doing the retrieval the pipeline already did for it.
+ * The web guard refuses every tool that reaches the network to a delegated
+ * child except these. A thinking child reasons over the conversation it
+ * inherited; it does not fetch pages, and a fetch there is the reasoning child
+ * doing the retrieval the pipeline already did for it.
  *
  * @param budget - the budget the child is registered with.
  * @param sessionId - the child's session id.
@@ -90,19 +85,20 @@ export function registerChild(budget: ChildBudget, sessionId: string, limit: num
  *
  * @param budget - the budget to charge.
  * @param execution - the pending call.
+ * @param webTools - the tools that reach the network.
  * @returns the denial reason when the budget is spent, otherwise undefined.
  */
 export function checkChildBudget(
   budget: ChildBudget,
   execution: ToolExecution,
+  webTools: () => readonly string[],
 ): string | undefined {
   const agent: Agent | undefined = execution.agent
   if (agent === undefined) return undefined
+  if (!webTools().includes(execution.name)) return undefined
   const sessionId = agent.session.id
-  const delegated = agent.session.header.origin === 'subagent'
-  const limit = budget.limits.get(sessionId) ?? (delegated ? budget.defaultLimit : undefined)
+  const limit = budget.limits.get(sessionId)
   if (limit === undefined) return undefined
-  if (!RETRIEVAL_TOOLS.includes(execution.name)) return undefined
   const used = (budget.calls.get(sessionId) ?? 0) + 1
   budget.calls.set(sessionId, used)
   if (used <= limit) return undefined
@@ -136,12 +132,16 @@ export function releaseChildBudget(budget: ChildBudget, sessionId: string): void
  * the model answered "what does this page say" by fetching it, and the page
  * landed in the conversation that the delegation exists to keep clean.
  *
- * @param execution - the call under evaluation.
- * @returns the denial reason, or undefined to leave the call allowed.
+ * @param budget - the budget that says which children read.
+ * @param webTools - the tools that reach the network.
+ * @returns the guard.
  */
-export function createWebGuard(budget: ChildBudget): ToolGuard {
+export function createWebGuard(
+  budget: ChildBudget,
+  webTools: () => readonly string[],
+): ToolGuard {
   return (execution) => {
-    if (!PARENT_DENIED_WEB_TOOLS.includes(execution.name)) return undefined
+    if (!webTools().includes(execution.name)) return undefined
     const agent: Agent | undefined = execution.agent
     if (agent === undefined) return undefined
     if (agent.session.header.origin === 'subagent') {
