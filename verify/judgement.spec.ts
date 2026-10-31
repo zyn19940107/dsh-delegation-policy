@@ -96,7 +96,9 @@ console.log('createClassifyFirstGuard')
   // the other tools are closed, so a delegation that skipped the classification
   // would leave the turn with neither.
   const state = new JudgementGate()
-  const guard = createClassifyFirstGuard(state)
+  const on = () => true
+  const off = () => false
+  const guard = createClassifyFirstGuard(state, on)
   check('refuses a thought before the turn is classified',
     guard(execution('d1', 'user', 'think_deep')) !== undefined)
   check('leaves the other tools alone', guard(execution('d1', 'user', 'search_web')) === undefined)
@@ -106,6 +108,10 @@ console.log('createClassifyFirstGuard')
   const denial = guard(execution('d3', 'user', 'think_deep'))
   check('names the tool to call', denial !== undefined && denial.includes('classify_question'))
   check('says why the order matters', denial !== undefined && denial.includes('before you delegate'))
+  // The rule belongs to the judgement gate: with the gate off, a turn may
+  // delegate without classifying, because nothing asks it to classify.
+  const relaxed = createClassifyFirstGuard(new JudgementGate(), off)
+  check('the gate switch turns the rule off', relaxed(execution('d4', 'user', 'think_deep')) === undefined)
 }
 
 if (failures > 0) {

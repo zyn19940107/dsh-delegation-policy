@@ -27,9 +27,6 @@ import { trimTranscript, watchChildStream, type WatchedTranscript } from './watc
 /** Provider that runs the thinking child. */
 export const DEFAULT_THINK_PROVIDER = 'fork'
 
-/** Default number of retrieval calls the thinking child may make. */
-export const DEFAULT_MAX_THINK_CALLS = 5
-
 /**
  * Default budget for one delegated thought. The child inherits the parent's
  * history and reasons over it, so its budget covers a whole extended turn

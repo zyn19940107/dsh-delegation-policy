@@ -116,6 +116,7 @@ export function checkChildBudget(
 export function releaseChildBudget(budget: ChildBudget, sessionId: string): void {
   budget.limits.delete(sessionId)
   budget.calls.delete(sessionId)
+  budget.readers.delete(sessionId)
 }
 
 /**

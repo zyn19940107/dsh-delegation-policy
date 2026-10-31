@@ -260,8 +260,9 @@ export function apply(ctx: Context, config: Config): void {
     judgementMaxPullbacks: () => config.judgementMaxPullbacks.get(),
   })
   // A turn is classified before it is delegated: once a thought is on its way,
-  // the tool that would classify afterwards is closed.
-  ctx.tools.guard(createClassifyFirstGuard(gate))
+  // the tool that would classify afterwards is closed. The rule follows the
+  // gate's switch — with the gate off, nothing asks a turn to classify.
+  ctx.tools.guard(createClassifyFirstGuard(gate, () => config.judgementEnabled.get()))
 
   ctx.on('tools/pre-execute', async (
     exec: ToolExecution,

@@ -18,9 +18,6 @@ import type { Context } from '@deepseek-ai/cordis'
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
 import { defineTool, type ToolExecution, type ToolGuard } from '@deepseek-ai/dsh-tools'
 
-/** Field the main agent's classification is written to. */
-export const CLASSIFY_FIELD = 'judgement'
-
 /** What one turn has been told so far. */
 export interface TurnJudgement {
   /** Whether the agent classified this turn. */
@@ -177,11 +174,20 @@ export const NEEDS_CLASSIFICATION_FIRST = 'Classify the question before you dele
 /**
  * Refuse a delegated thought that starts before the question is classified.
  *
+ * The rule belongs to the judgement gate, so it follows the gate's switch: with
+ * the gate off, a turn may delegate without classifying, because nothing is
+ * asking it to classify.
+ *
  * @param gate - the state the classification is recorded in.
+ * @param enabled - whether the judgement gate is on.
  * @returns the guard.
  */
-export function createClassifyFirstGuard(gate: JudgementGate): ToolGuard {
+export function createClassifyFirstGuard(
+  gate: JudgementGate,
+  enabled: () => boolean,
+): ToolGuard {
   return (execution) => {
+    if (!enabled()) return undefined
     if (execution.name !== 'think_deep') return undefined
     const agent: Agent | undefined = execution.agent
     if (agent === undefined) return undefined
